@@ -493,4 +493,55 @@ describe('pool adapter (integration, Phase 5)', () => {
     expect(fallback!.hashrate).toBe(5);
     expect(fallback!.workerCount).toBe(2);
   });
+
+  it('agent list sorts by date added and by worker name, both directions', async () => {
+    const base = new Date('2026-01-01T00:00:00Z');
+    const mk = (id: string, name: string, workerName: string | null, dayOffset: number) =>
+      prisma.agent.create({
+        data: {
+          id,
+          name,
+          workerName,
+          capabilities: [],
+          createdAt: new Date(base.getTime() + dayOffset * 86_400_000),
+          firstRegisteredAt: new Date(base.getTime() + dayOffset * 86_400_000),
+        },
+      });
+    await mk('agt_sort_1', 'satu', 'worker-zulu', 0);
+    await mk('agt_sort_2', 'dua', 'worker-alpha', 2);
+    await mk('agt_sort_3', 'tiga', null, 1);
+
+    async function names(sort: string): Promise<string[]> {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/agents?sort=${sort}&page_size=50`,
+        headers: { authorization: `Bearer ${jwt}` },
+      });
+      expect(res.statusCode).toBe(200);
+      return res.json().items.map((a: { name: string }) => a.name);
+    }
+
+    expect(await names('created_asc')).toEqual(['satu', 'tiga', 'dua']);
+    expect(await names('created_desc')).toEqual(['dua', 'tiga', 'satu']);
+    // Agents without a worker name stay last in both directions.
+    expect(await names('worker_name_asc')).toEqual(['dua', 'satu', 'tiga']);
+    expect(await names('worker_name_desc')).toEqual(['satu', 'dua', 'tiga']);
+    expect(await names('name')).toEqual(['dua', 'satu', 'tiga']);
+    expect(await names('name_desc')).toEqual(['tiga', 'satu', 'dua']);
+  });
+
+  it('workers list embeds the agent registration date for date sorting', async () => {
+    const agent = await setupAgent('rig-date', 'worker-date');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/workers',
+      headers: { authorization: `Bearer ${jwt}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const items = res.json().items as Array<{ agent_id: string; agent: { created_at?: string } }>;
+    const row = items.find((i) => i.agent_id === agent.agentId);
+    expect(row).toBeTruthy();
+    expect(typeof row!.agent.created_at).toBe('string');
+    expect(Number.isNaN(Date.parse(row!.agent.created_at!))).toBe(false);
+  });
 });

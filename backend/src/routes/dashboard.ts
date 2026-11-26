@@ -1,7 +1,7 @@
 // Dashboard endpoints (JWT): overview, agent list/detail, pairing, revoke.
 
 import type { FastifyInstance } from 'fastify';
-import type { PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient } from '@prisma/client';
 import { generatePairingCode, newId, sha256Hex } from '../lib/crypto';
 import { toAgentDto, toCommandDto, toEventDto, toSessionDto, toWorkerDto } from '../lib/serialize';
 import { httpError, requireRole, requireUser } from '../plugins/auth';
@@ -114,12 +114,34 @@ export async function dashboardRoutes(app: FastifyInstance, prisma: PrismaClient
       else if (WORKER_STATUSES.includes(status)) where.worker = { status };
     }
 
-    const orderBy =
-      request.query.sort === 'name'
-        ? { name: 'asc' as const }
-        : request.query.sort === 'replacement_count'
-          ? { replacementCount: 'desc' as const }
-          : { lastSeenAt: 'desc' as const };
+    // Sort options for the agent list: the historical ones (name,
+    // replacement_count, default last_seen) plus the owner's requested
+    // date-added and worker-name orders. Worker-name sorts keep agents
+    // without a worker name last in both directions.
+    let orderBy: Prisma.AgentOrderByWithRelationInput = { lastSeenAt: 'desc' };
+    switch (request.query.sort) {
+      case 'name':
+        orderBy = { name: 'asc' };
+        break;
+      case 'name_desc':
+        orderBy = { name: 'desc' };
+        break;
+      case 'replacement_count':
+        orderBy = { replacementCount: 'desc' };
+        break;
+      case 'created_desc':
+        orderBy = { createdAt: 'desc' };
+        break;
+      case 'created_asc':
+        orderBy = { createdAt: 'asc' };
+        break;
+      case 'worker_name_asc':
+        orderBy = { workerName: { sort: 'asc', nulls: 'last' } };
+        break;
+      case 'worker_name_desc':
+        orderBy = { workerName: { sort: 'desc', nulls: 'last' } };
+        break;
+    }
 
     const [total, rows] = await Promise.all([
       prisma.agent.count({ where: where as never }),

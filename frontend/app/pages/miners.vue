@@ -16,6 +16,7 @@ const loading = ref(true)
 const loadError = ref('')
 const nowTick = ref(Date.now())
 const statusFilter = ref('')
+const sortBy = ref('worker_asc')
 
 async function load() {
   try {
@@ -48,6 +49,32 @@ useLiveRefresh(load)
 const filtered = computed(() =>
   statusFilter.value ? workers.value.filter((w) => w.status === statusFilter.value) : workers.value,
 )
+
+/** Urutan tampilan: nama worker A–Z/Z–A, nama agent A–Z/Z–A, atau tanggal
+ * ditambahkan (tanggal registrasi agent-nya) terbaru/terlama. Bawaan A–Z
+ * nama worker seperti urutan server. */
+const sorted = computed(() => {
+  const rows = [...filtered.value]
+  const byName = (a: WorkerInfo, b: WorkerInfo) => a.name.localeCompare(b.name)
+  const byAgent = (a: WorkerInfo, b: WorkerInfo) => (a.agent?.name ?? '').localeCompare(b.agent?.name ?? '')
+  const byDate = (a: WorkerInfo, b: WorkerInfo) =>
+    (a.agent?.created_at ? Date.parse(a.agent.created_at) : 0) -
+    (b.agent?.created_at ? Date.parse(b.agent.created_at) : 0)
+  switch (sortBy.value) {
+    case 'worker_desc':
+      return rows.sort((a, b) => byName(b, a))
+    case 'agent_asc':
+      return rows.sort(byAgent)
+    case 'agent_desc':
+      return rows.sort((a, b) => byAgent(b, a))
+    case 'date_desc':
+      return rows.sort((a, b) => byDate(b, a))
+    case 'date_asc':
+      return rows.sort(byDate)
+    default:
+      return rows.sort(byName)
+  }
+})
 
 /** Ringkasan di atas tabel. Total VM & hitungan berjalan dari SEMUA worker
  * (bukan hasil filter); Total Pool datang dari server sebagai total seluruh
@@ -185,6 +212,14 @@ async function runPendingHold() {
           <option value="TAK_TERJANGKAU">Tak Terjangkau</option>
           <option value="POOL_STALL">Pool Stall</option>
         </select>
+        <select v-model="sortBy" class="field !w-auto" title="Urutan daftar worker">
+          <option value="worker_asc">Nama Worker: A ke Z</option>
+          <option value="worker_desc">Nama Worker: Z ke A</option>
+          <option value="agent_asc">Nama Agent: A ke Z</option>
+          <option value="agent_desc">Nama Agent: Z ke A</option>
+          <option value="date_desc">Tanggal Ditambahkan: Terbaru</option>
+          <option value="date_asc">Tanggal Ditambahkan: Terlama</option>
+        </select>
         <p class="ml-auto text-xs text-ink-400">{{ filtered.length }} worker ditampilkan</p>
       </div>
 
@@ -219,7 +254,7 @@ async function runPendingHold() {
                 <EmptyState message="Tidak ada worker yang cocok dengan filter ini." />
               </td>
             </tr>
-            <template v-for="w in filtered" :key="w.id">
+            <template v-for="w in sorted" :key="w.id">
             <tr>
               <td class="font-medium text-white">{{ w.name }}</td>
               <td>

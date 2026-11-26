@@ -41,7 +41,15 @@ export async function workerRoutes(app: FastifyInstance, prisma: PrismaClient, d
         items: rows.map((w) => ({
           ...toWorkerDto(w),
           pool: poolFields.get(w.agentId) ?? null,
-          agent: { id: w.agent.id, name: w.agent.name, status: w.agent.status, replacement_count: w.agent.replacementCount },
+          agent: {
+            id: w.agent.id,
+            name: w.agent.name,
+            status: w.agent.status,
+            replacement_count: w.agent.replacementCount,
+            // "Tanggal ditambahkan" untuk baris worker = tanggal agent-nya
+            // terdaftar; record Worker sendiri tidak menyimpan created_at.
+            created_at: w.agent.createdAt.toISOString(),
+          },
         })),
         total,
         page,

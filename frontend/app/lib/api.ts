@@ -164,6 +164,7 @@ export function pick<T = unknown>(obj: unknown, ...keys: string[]): T | undefine
 export interface AgentSummary {
   id: string
   name: string
+  created_at?: string
   worker_name?: string | null
   capabilities?: string[]
   bridge_version?: string | null

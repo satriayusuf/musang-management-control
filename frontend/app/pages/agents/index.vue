@@ -16,6 +16,7 @@ const loadError = ref('')
 
 const search = ref('')
 const statusFilter = ref('')
+const sortBy = ref('last_seen')
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 const nowTick = ref(Date.now())
@@ -28,7 +29,7 @@ async function load() {
       status: statusFilter.value || undefined,
       page: page.value,
       page_size: pageSize,
-      sort: 'last_seen',
+      sort: sortBy.value,
     })
     agents.value = res.items
     total.value = res.total
@@ -55,6 +56,10 @@ watch(search, () => {
   }, 350)
 })
 watch(statusFilter, () => {
+  page.value = 1
+  void load()
+})
+watch(sortBy, () => {
   page.value = 1
   void load()
 })
@@ -163,7 +168,15 @@ async function doDelete() {
           <option value="ONLINE">Online</option>
           <option value="UNREACHABLE">Tak Terjangkau</option>
         </select>
-        <p class="ml-auto text-xs text-ink-400">Diurutkan dari heartbeat terakhir</p>
+        <select v-model="sortBy" class="field !w-auto ml-auto" title="Urutan daftar agent">
+          <option value="last_seen">Urutan: Heartbeat Terakhir</option>
+          <option value="created_desc">Urutan: Tanggal Ditambahkan (Terbaru)</option>
+          <option value="created_asc">Urutan: Tanggal Ditambahkan (Terlama)</option>
+          <option value="name">Urutan: Nama Agent (A ke Z)</option>
+          <option value="name_desc">Urutan: Nama Agent (Z ke A)</option>
+          <option value="worker_name_asc">Urutan: Nama Worker (A ke Z)</option>
+          <option value="worker_name_desc">Urutan: Nama Worker (Z ke A)</option>
+        </select>
       </div>
 
       <p v-if="loadError" class="px-4 py-3 text-sm text-red-400">{{ loadError }}</p>
