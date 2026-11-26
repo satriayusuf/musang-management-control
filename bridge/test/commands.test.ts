@@ -4,27 +4,33 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CommandExecutor } from "../src/commands.js";
 import { DEFAULT_CAPABILITIES } from "../src/config.js";
-import { CronManager, type CronRunner } from "../src/cron.js";
+import { CronManager, type CronJobRecord, type CronStore } from "../src/cron.js";
 import { DemoMiner } from "../src/miner-demo.js";
 import type { ClaimedCommand } from "../src/types.js";
 
-class FakeCronRunner implements CronRunner {
-  content = "";
-  async read(): Promise<string> {
-    return this.content;
+class MemoryCronStore implements CronStore {
+  jobs: CronJobRecord[] = [];
+  async init(): Promise<void> {}
+  async loadAll(): Promise<CronJobRecord[]> {
+    return this.jobs.map((j) => ({ ...j }));
   }
-  async write(content: string): Promise<void> {
-    this.content = content;
+  async saveJob(job: CronJobRecord): Promise<void> {
+    const idx = this.jobs.findIndex((j) => j.name === job.name);
+    if (idx === -1) this.jobs.push({ ...job });
+    else this.jobs[idx] = { ...job };
+  }
+  async removeJob(name: string): Promise<void> {
+    this.jobs = this.jobs.filter((j) => j.name !== name);
   }
 }
 
-let cronRunner: FakeCronRunner;
+let cronStore: MemoryCronStore;
 
 let bridgeDir: string;
 
 beforeEach(() => {
   bridgeDir = mkdtempSync(join(tmpdir(), "muse-bridge-test-"));
-  cronRunner = new FakeCronRunner();
+  cronStore = new MemoryCronStore();
 });
 
 afterEach(() => {
@@ -40,7 +46,7 @@ function makeExecutor(
     capabilities: overrides.capabilities ?? [...DEFAULT_CAPABILITIES],
     bridgeDir,
     getMinMemStartGib: () => overrides.minMem ?? 5,
-    cron: new CronManager(cronRunner),
+    cron: new CronManager(cronStore),
   });
 }
 
@@ -124,25 +130,32 @@ describe("CommandExecutor", () => {
     expect(unholdAgain.status).toBe("succeeded");
   });
 
-  it("cron.install writes the job, cron.list reads it back, cron.remove deletes it", async () => {
+  it("cron.install stores the job, cron.list reads it back, cron.remove deletes it", async () => {
     const miner = new DemoMiner();
     const executor = makeExecutor(miner);
 
     const install = await executor.execute(
-      cmd("cron.install", { name: "bersih-log", schedule: "*/10 * * * *", command: "find ~/logs -name '*.log' -mtime +1 -delete" }),
+      cmd("cron.install", { name: "bersih-log", schedule: "*/10 * * * *", command: "/usr/bin/find /home/user/logs -name *.log -mtime +1 -delete" }),
     );
     expect(install.status).toBe("succeeded");
-    expect(cronRunner.content).toContain("# muse-cron:bersih-log");
+    expect(cronStore.jobs.map((j) => j.name)).toEqual(["bersih-log"]);
+    expect(JSON.parse(install.output ?? "{}")).toMatchObject({ name: "bersih-log", schedule: "*/10 * * * *" });
 
     const list = await executor.execute(cmd("cron.list"));
     expect(list.status).toBe("succeeded");
-    expect(JSON.parse(list.output ?? "{}").jobs).toEqual([
-      { name: "bersih-log", schedule: "*/10 * * * *", command: "find ~/logs -name '*.log' -mtime +1 -delete" },
-    ]);
+    const jobs = JSON.parse(list.output ?? "{}").jobs as Array<Record<string, unknown>>;
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toMatchObject({
+      name: "bersih-log",
+      schedule: "*/10 * * * *",
+      command: "/usr/bin/find /home/user/logs -name *.log -mtime +1 -delete",
+      last_status: null,
+    });
+    expect(typeof jobs[0].next_run_at).toBe("string");
 
     const remove = await executor.execute(cmd("cron.remove", { name: "bersih-log" }));
     expect(remove.status).toBe("succeeded");
-    expect(cronRunner.content).not.toContain("muse-cron:bersih-log");
+    expect(cronStore.jobs).toEqual([]);
   });
 
   it("cron.install rejects an invalid payload and respects capabilities", async () => {

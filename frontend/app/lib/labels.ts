@@ -63,6 +63,7 @@ export const EVENT_TYPE_LABELS: Record<string, string> = {
   AGENT_UNREACHABLE: 'Agent Tak Terjangkau',
   AGENT_RECONNECTED: 'Agent Terhubung Kembali',
   AGENT_SHUTDOWN: 'Agent Mematikan Diri',
+  CRON_RUN: 'Cron Job Berjalan',
   VM_REPLACED: 'VM Diganti',
   REBOOT: 'Reboot',
   COMMAND_CREATED: 'Perintah Dibuat',

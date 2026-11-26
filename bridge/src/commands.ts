@@ -116,11 +116,11 @@ export class CommandExecutor {
           }
           const p = cmd.payload as unknown as CronJob;
           const job: CronJob = { name: p.name, schedule: p.schedule.trim().replace(/\s+/g, " "), command: p.command.trim() };
-          await this.deps.cron.install(job);
+          const record = await this.deps.cron.install(job);
           return {
             status: "succeeded",
             exit_code: 0,
-            output: `Cron job "${job.name}" terpasang: ${job.schedule} ${job.command}`,
+            output: JSON.stringify(record),
           };
         }
         case "cron.list": {

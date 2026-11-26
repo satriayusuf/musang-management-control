@@ -646,11 +646,12 @@ function resultText(c: CommandInfo): string {
                     v-model="cronCommand"
                     rows="2"
                     spellcheck="false"
-                    placeholder="cth. find ~/logs -name '*.log' -mtime +1 -delete"
+                    placeholder="cth. /home/user/workspace/scripts/laporan.sh --harian"
                     class="field font-mono text-xs"
                   />
                   <p class="mt-1.5 text-xs text-ink-400">
-                    Satu baris perintah shell, dijalankan sebagai pengguna bridge di VM agent pada jadwal di atas.
+                    Satu perintah beserta argumennya, dijalankan bridge sebagai pengguna bridge di VM agent — tanpa shell:
+                    tidak ada pipa, pengalihan, variabel, atau ~. Untuk langkah yang kompleks, bungkus dulu dalam satu berkas skrip lalu tunjuk berkas itu di sini.
                   </p>
                 </div>
               </template>

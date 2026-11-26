@@ -26,6 +26,13 @@ describe('validateCronPayload', () => {
     expect(validateCronPayload('cron.install', undefined)).not.toBeNull();
   });
 
+  it('rejects shell metacharacters in command (jobs run without a shell)', () => {
+    for (const command of ['/bin/a; /bin/b', '/bin/a | /bin/b', '/bin/a && /bin/b', '/bin/echo `id`', '/bin/echo $(id)', '/bin/a > /tmp/x', '/bin/echo $HOME']) {
+      expect(validateCronPayload('cron.install', { name: 'ok', schedule: '*/5 * * * *', command })).not.toBeNull();
+    }
+    expect(validateCronPayload('cron.install', { name: 'ok', schedule: '*/5 * * * *', command: '/home/user/scripts/laporan.sh --harian' })).toBeNull();
+  });
+
   it('enforces the cron.remove shape { name } and leaves cron.list free', () => {
     expect(validateCronPayload('cron.remove', { name: 'ok-1' })).toBeNull();
     expect(validateCronPayload('cron.remove', {})).not.toBeNull();
