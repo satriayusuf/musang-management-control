@@ -1,0 +1,84 @@
+# Muse Bridge — Petunjuk Instalasi & Pendaftaran Mandiri (Self-Enrollment)
+
+Dokumen ini dibaca oleh agent yang akan memasang Muse Bridge di mesin ini.
+Ikuti langkah-langkahnya secara berurutan. Tidak ada langkah yang memerlukan
+operator manusia: kunci pendaftaran (enrollment key) sudah tertanam di
+dokumen ini.
+
+## Data pendaftaran
+
+- Server: {{SERVER_URL}}
+- Enrollment key: `{{ENROLLMENT_KEY}}`
+
+## Langkah 1 — Unduh bridge dan installer
+
+Unduh dua berkas berikut dari root server ke direktori kerja yang PERSISTEN
+(di VM agent, hanya direktori home/workspace yang bertahan antar-reboot —
+jangan gunakan /tmp atau /opt):
+
+```bash
+mkdir -p ~/muse-bridge && cd ~/muse-bridge
+curl -fsSL {{SERVER_URL}}/bridge.cjs -o bridge.cjs
+curl -fsSL {{SERVER_URL}}/install.sh -o install.sh
+```
+
+## Langkah 2 — Tulis bridge.env
+
+Buat berkas `bridge.env` di direktori yang sama dengan isi berikut.
+`MUSE_AGENT_NAME` isi dengan nama yang menggambarkan mesin ini
+(contoh: `rig-jakarta-01`). `MUSE_WORKER_NAME` opsional, tetapi bila diisi
+nilainya HARUS sama persis — termasuk huruf besar/kecil — dengan nama
+worker mesin ini di pool, karena server mencocokkan data pool berdasarkan
+nama itu; nama yang berbeda membuat worker terbaca "tidak terlihat di
+pool" di dashboard. Isi hanya bila mesin ini memang punya worker di pool.
+
+`MUSE_MINER_STATS_URL` juga opsional: bila program miner di mesin ini
+menyediakan statistiknya sebagai JSON lewat HTTP lokal (misalnya alamat
+status/API lokal program itu), isi baris ini dengan alamat tersebut — uji
+dulu dengan curl dari mesin ini; alamat yang benar mengembalikan JSON
+berisi angka hashrate/share. Nama field yang dipahami bridge:
+`hashrate_hs` atau `hashrate`, `shares_local` atau `accepted`,
+`last_share_at`, `job_height`, `difficulty`. Bila terisi, dashboard
+menampilkan hashrate asli mesin ini di kolom "Hashrate VM", terpisah dari
+hashrate pool. Bila programnya tidak menyediakan alamat statistik apa pun,
+lewati baris ini — jangan biarkan langkah ini menghalangi pendaftaran.
+
+```bash
+cat > bridge.env <<'EOF'
+MUSE_SERVER_URL={{SERVER_URL}}
+MUSE_ENROLLMENT_KEY={{ENROLLMENT_KEY}}
+MUSE_AGENT_NAME=ganti-dengan-nama-mesin-ini
+EOF
+```
+
+## Langkah 3 — Pasang bridge
+
+```bash
+bash install.sh
+```
+
+Installer memasang bridge sebagai service `muse-bridge` (systemd) yang
+berjalan otomatis dan hanya membuat koneksi KELUAR ke server. Saat pertama
+kali berjalan, bridge mendaftarkan dirinya sendiri ke
+`POST {{SERVER_URL}}/api/bridge/self-register` memakai enrollment key di
+atas — tidak ada kode pairing dan tidak ada persetujuan operator.
+
+## Langkah 4 — Verifikasi
+
+1. Service aktif: `systemctl status muse-bridge` menunjukkan `active (running)`.
+2. Log bridge memuat baris pendaftaran berhasil (agent id + session no 1).
+3. Bila perlu, uji endpoint pendaftaran secara manual (respons sukses berisi
+   `agent_id`, `agent_token`, `session_no`):
+
+```bash
+curl -s -X POST {{SERVER_URL}}/api/bridge/self-register \
+  -H 'Content-Type: application/json' \
+  -d '{"enrollment_key":"{{ENROLLMENT_KEY}}","agent_name":"uji-manual","boot_id":"manual-check"}'
+```
+
+Setelah terdaftar, bridge mengirim heartbeat mengikuti interval yang
+diatur server (saat ini 60 detik) dan agent
+muncul di dashboard sebagai agent yang terdaftar mandiri (badge "self").
+Enrollment key bersifat rahasia bersama: jangan membagikannya ke pihak lain.
+Bila key dirotasi oleh admin, salinan dokumen lama berhenti berlaku dan
+dokumen ini harus diambil ulang dari {{SERVER_URL}}/agent.md.

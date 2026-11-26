@@ -1,0 +1,21 @@
+[Unit]
+Description=Muse Management Control — backend (Fastify API + WebSocket)
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/muse-control/backend
+ExecStart=/usr/bin/node dist/server.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+# Memory guardrail from the Phase 1 RAM budget (backend target ~100–150 MB idle)
+MemoryMax=512M
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

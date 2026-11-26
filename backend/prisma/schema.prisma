@@ -1,0 +1,348 @@
+// Muse Management Control — Prisma schema (Phase 1)
+// Implements every model from CONTRACT.md. Table/column names are snake_case
+// via @@map/@map; Prisma-side names stay camelCase.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  // Phase 3 (CONTRACT-3 §1): multi-user roles. Existing rows default to
+  // ADMIN so the seeded administrator keeps full access.
+  role         String    @default("ADMIN") // ADMIN | OPERATOR | VIEWER
+  disabledAt   DateTime? @map("disabled_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@map("users")
+}
+
+model Agent {
+  id               String    @id
+  name             String
+  tokenHash        String?   @map("token_hash")
+  workerName       String?   @map("worker_name")
+  capabilities     String[]
+  bridgeVersion    String?   @map("bridge_version")
+  status           String    @default("ONLINE") // ONLINE | UNREACHABLE
+  // Phase 3 (CONTRACT-3 §8): how this agent enrolled.
+  enrolledVia      String    @default("pairing") @map("enrolled_via") // pairing | self
+  firstRegisteredAt DateTime @default(now()) @map("first_registered_at")
+  lastSeenAt       DateTime? @map("last_seen_at")
+  replacementCount Int       @default(0) @map("replacement_count")
+  currentSessionId String?   @map("current_session_id")
+  revokedAt        DateTime? @map("revoked_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  sessions   Session[]
+  heartbeats Heartbeat[]
+  worker     Worker?
+  poolSnapshot PoolSnapshot?
+  commands   Command[]
+  events     Event[]
+  alertNotifications AlertNotification[]
+
+  @@index([status])
+  @@index([lastSeenAt])
+  @@map("agents")
+}
+
+model Session {
+  id        String    @id
+  agentId   String    @map("agent_id")
+  bootId    String    @map("boot_id")
+  bootTime  DateTime? @map("boot_time")
+  startedAt DateTime  @default(now()) @map("started_at")
+  endedAt   DateTime? @map("ended_at")
+  endReason String?   @map("end_reason") // TAKEOVER | SHUTDOWN | LOST | null
+  sessionNo Int       @map("session_no")
+
+  agent      Agent       @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  heartbeats Heartbeat[]
+
+  @@index([agentId, startedAt])
+  @@map("sessions")
+}
+
+model Heartbeat {
+  id              String   @id
+  agentId         String   @map("agent_id")
+  sessionId       String   @map("session_id")
+  receivedAt      DateTime @default(now()) @map("received_at")
+  memAvailableGib Float    @map("mem_available_gib")
+  minerSnapshot   Json     @map("miner_snapshot")
+  agentStatus     String   @map("agent_status")
+
+  agent   Agent   @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId])
+  @@index([sessionId, receivedAt])
+  @@map("heartbeats")
+}
+
+model Worker {
+  id                 String    @id
+  agentId            String    @unique @map("agent_id")
+  name               String    @unique
+  poolAddress        String?   @map("pool_address")
+  status             String    @default("TAK_TERJANGKAU") // SEHAT|WASPADA|MATI|GAGAL_START|TAK_TERJANGKAU|POOL_STALL
+  statusReason       String    @default("") @map("status_reason")
+  statusSince        DateTime  @default(now()) @map("status_since")
+  lastShareAt        DateTime? @map("last_share_at")
+  lastLocalShareAt   DateTime? @map("last_local_share_at")
+  hashrateHs         Float     @default(0) @map("hashrate_hs")
+  acceptedShares     Int       @default(0) @map("accepted_shares")
+  rejectedShares     Int       @default(0) @map("rejected_shares")
+  sharesLocal        Int       @default(0) @map("shares_local")
+  jobHeight          Int       @default(0) @map("job_height")
+  difficulty         Float     @default(0)
+  minerServiceState  String    @default("unknown") @map("miner_service_state")
+  lastRecoveryAt     DateTime? @map("last_recovery_at")
+  holdUntil          DateTime? @map("hold_until")
+  holdActive         Boolean   @default(false) @map("hold_active")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  agent    Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  commands Command[]
+  events   Event[]
+  alertNotifications AlertNotification[]
+
+  @@map("workers")
+}
+
+model Command {
+  id             String    @id
+  agentId        String    @map("agent_id")
+  workerId       String?   @map("worker_id")
+  templateId     String?   @map("template_id")
+  batchId        String?   @map("batch_id")
+  // Phase 3 (CONTRACT-3 §2/§3): how this command came to exist.
+  source         String    @default("manual") // manual | automation | schedule
+  ruleId         String?   @map("rule_id")
+  scheduleId     String?   @map("schedule_id")
+  type           String
+  payload        Json      @default("{}")
+  idempotencyKey String    @unique @map("idempotency_key")
+  status         String    @default("QUEUED") // QUEUED|SENT|RUNNING|SUCCEEDED|FAILED|TIMED_OUT|EXPIRED
+  requestedBy    String    @map("requested_by")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  sentAt         DateTime? @map("sent_at")
+  startedAt      DateTime? @map("started_at")
+  finishedAt     DateTime? @map("finished_at")
+  expiresAt      DateTime  @map("expires_at")
+  result         Json?
+  errorReason    String?   @map("error_reason")
+  verifyDeadline DateTime? @map("verify_deadline")
+
+  agent    Agent           @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  worker   Worker?         @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  template CommandTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  batch    BroadcastBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+
+  @@index([agentId, status])
+  @@index([status, expiresAt])
+  @@index([batchId])
+  @@map("commands")
+}
+
+model Event {
+  id          String   @id
+  agentId     String?  @map("agent_id")
+  workerId    String?  @map("worker_id")
+  type        String
+  description String
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  agent  Agent?  @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  worker Worker? @relation(fields: [workerId], references: [id], onDelete: SetNull)
+
+  @@index([agentId, createdAt])
+  @@index([workerId, createdAt])
+  @@index([type, createdAt])
+  @@map("events")
+}
+
+model AuditLog {
+  id        String   @id
+  actor     String
+  action    String
+  target    String
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model PairingCode {
+  id            String    @id
+  codeHash      String    @unique @map("code_hash")
+  plannedName   String    @map("planned_name")
+  createdBy     String    @map("created_by")
+  expiresAt     DateTime  @map("expires_at")
+  usedAt        DateTime? @map("used_at")
+  usedByAgentId String?   @map("used_by_agent_id")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  @@map("pairing_codes")
+}
+
+model SystemSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+}
+
+model PoolSnapshot {
+  id               String    @id
+  agentId          String    @unique @map("agent_id")
+  provider         String
+  lookupParam      String    @map("lookup_param")
+  workerName       String    @map("worker_name")
+  found            Boolean   @default(false)
+  poolHashrate     Float?    @map("pool_hashrate")
+  poolAccepted     Int?      @map("pool_accepted")
+  poolRejected     Int?      @map("pool_rejected")
+  poolLastShareAt  DateTime? @map("pool_last_share_at")
+  // Last share time EVER recorded from a successful fetch; never overwritten
+  // by not_found / error cycles (CONTRACT-5 B1).
+  lastKnownShareAt DateTime? @map("last_known_share_at")
+  // fetchedAt = last SUCCESSFUL fetch; lastAttemptAt = last cycle attempt.
+  fetchedAt        DateTime? @map("fetched_at")
+  lastAttemptAt    DateTime? @map("last_attempt_at")
+  fetchOk          Boolean   @default(false) @map("fetch_ok")
+  fetchError       String?   @map("fetch_error")
+  // Escalation confirmation state (spec §5.1 POOL_CONFIRM_POLLS).
+  confirmKind      String?   @map("confirm_kind") // 'stall' | 'not_found'
+  confirmCount     Int       @default(0) @map("confirm_count")
+  confirmLastAt    DateTime? @map("confirm_last_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@map("pool_snapshots")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 models (CONTRACT-2)
+// ---------------------------------------------------------------------------
+
+model CommandTemplate {
+  id          String   @id
+  name        String   @unique
+  type        String
+  payload     Json     @default("{}")
+  description String   @default("")
+  sensitive   Boolean  @default(false)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  commands Command[]
+  batches  BroadcastBatch[]
+
+  @@map("command_templates")
+}
+
+model BroadcastBatch {
+  id             String   @id
+  type           String
+  templateId     String?  @map("template_id")
+  payload        Json     @default("{}")
+  requestedBy    String   @map("requested_by")
+  idempotencyKey String   @unique @map("idempotency_key")
+  totalCount     Int      @default(0) @map("total_count")
+  createdCount   Int      @default(0) @map("created_count")
+  skippedCount   Int      @default(0) @map("skipped_count")
+  // Per-target skip detail [{agent_id, reason}] so an idempotent retry can
+  // return the exact original outcome (see CONTRACT-2 §2).
+  skipped        Json     @default("[]")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  template CommandTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  commands Command[]
+
+  @@map("broadcast_batches")
+}
+
+model AlertNotification {
+  id        String   @id
+  dedupeKey String   @unique @map("dedupe_key")
+  condition String
+  agentId   String?  @map("agent_id")
+  workerId  String?  @map("worker_id")
+  title     String
+  body      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  agent      Agent?          @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  worker     Worker?         @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  deliveries AlertDelivery[]
+
+  @@index([createdAt])
+  @@map("alert_notifications")
+}
+
+model AlertDelivery {
+  id             String   @id
+  notificationId String   @map("notification_id")
+  channel        String // webhook | telegram
+  status         String // sent | failed
+  error          String?
+  at             DateTime @default(now())
+
+  notification AlertNotification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([notificationId])
+  @@map("alert_deliveries")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 models (CONTRACT-3 §2/§3)
+// ---------------------------------------------------------------------------
+
+model AutomationRule {
+  id             String    @id
+  name           String
+  enabled        Boolean   @default(false)
+  condition      Json // {kind:"worker_status", status, for_sec} | {kind:"agent_unreachable", for_sec}
+  action         Json // {type, template_id?}
+  target         Json // {agent_ids: string[] | "all"}
+  cooldownSec    Int       @default(3600) @map("cooldown_sec")
+  maxPerDay      Int       @default(5) @map("max_per_day")
+  lastFiredAt    DateTime? @map("last_fired_at")
+  fireCountToday Int       @default(0) @map("fire_count_today")
+  fireCountDate  DateTime? @map("fire_count_date")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@map("automation_rules")
+}
+
+model Schedule {
+  id        String    @id
+  name      String
+  enabled   Boolean   @default(false)
+  cron      String
+  action    Json // {type?, template_id?}
+  target    Json // {agent_ids: string[] | "all"}
+  broadcast Boolean   @default(false)
+  nextRunAt DateTime? @map("next_run_at")
+  lastRunAt DateTime? @map("last_run_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  @@map("schedules")
+}

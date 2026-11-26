@@ -1,0 +1,22 @@
+# Dependensi & hasil build
+node_modules/
+dist/
+.output/
+.nuxt/
+
+# Konfigurasi lokal & rahasia (contohnya tetap masuk: *.env.example)
+.env
+**/.env
+bridge.env
+identity.json
+config.json
+
+# Lain-lain
+*.log
+.DS_Store
+
+# Dokumen spek biner tidak ikut snapshot repo
+spec/*.pdf
+
+# Symlink artefak lokal ke hasil build
+dist
