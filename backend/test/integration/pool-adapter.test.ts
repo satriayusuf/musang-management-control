@@ -544,4 +544,29 @@ describe('pool adapter (integration, Phase 5)', () => {
     expect(typeof row!.agent.created_at).toBe('string');
     expect(Number.isNaN(Date.parse(row!.agent.created_at!))).toBe(false);
   });
+
+  it('agent list search honors search_by: agent by default, worker on request', async () => {
+    const mk = (id: string, name: string, workerName: string | null) =>
+      prisma.agent.create({ data: { id, name, workerName, capabilities: [] } });
+    await mk('agt_seek_1', 'alpha-rig', 'worker-one');
+    await mk('agt_seek_2', 'beta-rig', 'worker-alpha');
+
+    async function names(qs: string): Promise<string[]> {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/agents?${qs}`,
+        headers: { authorization: `Bearer ${jwt}` },
+      });
+      expect(res.statusCode).toBe(200);
+      return res.json().items.map((a: { name: string }) => a.name);
+    }
+
+    // Default mode = agent: 'alpha' matches the agent NAME alpha-rig only,
+    // not beta-rig whose worker happens to contain 'alpha'.
+    expect(await names('search=alpha')).toEqual(['alpha-rig']);
+    // Worker mode: 'alpha' matches only beta-rig (worker-alpha).
+    expect(await names('search=alpha&search_by=worker')).toEqual(['beta-rig']);
+    // Worker mode also matches worker-one.
+    expect(await names('search=worker-one&search_by=worker')).toEqual(['alpha-rig']);
+  });
 });

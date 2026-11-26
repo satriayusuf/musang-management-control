@@ -15,6 +15,7 @@ const loading = ref(true)
 const loadError = ref('')
 
 const search = ref('')
+const searchBy = ref('agent')
 const statusFilter = ref('')
 const sortBy = ref('last_seen')
 let searchTimer: ReturnType<typeof setTimeout> | null = null
@@ -26,6 +27,7 @@ async function load() {
   try {
     const res = await api.listAgents({
       search: search.value || undefined,
+      search_by: searchBy.value,
       status: statusFilter.value || undefined,
       page: page.value,
       page_size: pageSize,
@@ -56,6 +58,10 @@ watch(search, () => {
   }, 350)
 })
 watch(statusFilter, () => {
+  page.value = 1
+  void load()
+})
+watch(searchBy, () => {
   page.value = 1
   void load()
 })
@@ -159,9 +165,18 @@ async function doDelete() {
 
     <div class="panel">
       <div class="flex flex-wrap items-center gap-3 border-b border-ink-700 px-4 py-3">
+        <select v-model="searchBy" class="field !w-auto" title="Mode pencarian">
+          <option value="agent">Cari: Agent</option>
+          <option value="worker">Cari: Worker</option>
+        </select>
         <div class="relative min-w-56 flex-1 sm:max-w-xs">
           <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
-          <input v-model="search" type="text" placeholder="Cari nama atau ID agent…" class="field !pl-9" />
+          <input
+            v-model="search"
+            type="text"
+            :placeholder="searchBy === 'worker' ? 'Cari nama worker…' : 'Cari nama atau ID agent…'"
+            class="field !pl-9"
+          />
         </div>
         <select v-model="statusFilter" class="field !w-auto">
           <option value="">Semua Status</option>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Play, Info, PauseCircle, PlayCircle } from 'lucide-vue-next'
+import { Play, Info, PauseCircle, PlayCircle, Search } from 'lucide-vue-next'
 import { api, type WorkerInfo, type AgentSummary } from '~/lib/api'
 import { fmtDateTime, fmtRelative, fmtHashrate, fmtGiB, fmtNumber, newIdempotencyKey } from '~/lib/format'
 import { commandTypeLabel } from '~/lib/labels'
@@ -17,6 +17,8 @@ const loadError = ref('')
 const nowTick = ref(Date.now())
 const statusFilter = ref('')
 const sortBy = ref('worker_asc')
+const search = ref('')
+const searchBy = ref('agent')
 
 async function load() {
   try {
@@ -46,9 +48,18 @@ onMounted(() => {
 })
 useLiveRefresh(load)
 
-const filtered = computed(() =>
-  statusFilter.value ? workers.value.filter((w) => w.status === statusFilter.value) : workers.value,
-)
+const filtered = computed(() => {
+  let rows = workers.value
+  const q = search.value.trim().toLowerCase()
+  if (q) {
+    rows = rows.filter((w) =>
+      searchBy.value === 'worker'
+        ? w.name.toLowerCase().includes(q)
+        : (w.agent?.name ?? '').toLowerCase().includes(q) || w.agent_id.toLowerCase().includes(q),
+    )
+  }
+  return statusFilter.value ? rows.filter((w) => w.status === statusFilter.value) : rows
+})
 
 /** Urutan tampilan: nama worker A–Z/Z–A, nama agent A–Z/Z–A, atau tanggal
  * ditambahkan (tanggal registrasi agent-nya) terbaru/terlama. Bawaan A–Z
@@ -203,6 +214,19 @@ async function runPendingHold() {
 
     <div class="panel">
       <div class="flex flex-wrap items-center gap-3 border-b border-ink-700 px-4 py-3">
+        <select v-model="searchBy" class="field !w-auto" title="Mode pencarian">
+          <option value="agent">Cari: Agent</option>
+          <option value="worker">Cari: Worker</option>
+        </select>
+        <div class="relative min-w-56 flex-1 sm:max-w-xs">
+          <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+          <input
+            v-model="search"
+            type="text"
+            :placeholder="searchBy === 'worker' ? 'Cari nama worker…' : 'Cari nama atau ID agent…'"
+            class="field !pl-9"
+          />
+        </div>
         <select v-model="statusFilter" class="field !w-auto">
           <option value="">Semua Status</option>
           <option value="SEHAT">Sehat</option>

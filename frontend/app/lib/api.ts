@@ -608,6 +608,7 @@ export const api = {
   },
   async listAgents(params: {
     search?: string
+    search_by?: string
     status?: string
     page?: number
     page_size?: number

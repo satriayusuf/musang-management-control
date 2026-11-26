@@ -94,20 +94,25 @@ export async function dashboardRoutes(app: FastifyInstance, prisma: PrismaClient
 
   // --- Agent list ---
   app.get<{
-    Querystring: { search?: string; status?: string; page?: string; page_size?: string; sort?: string };
+    Querystring: { search?: string; search_by?: string; status?: string; page?: string; page_size?: string; sort?: string };
   }>('/api/agents', { preHandler: requireUser }, async (request) => {
     const page = Math.max(1, Number(request.query.page ?? 1) || 1);
     const pageSize = Math.min(200, Math.max(1, Number(request.query.page_size ?? 20) || 20));
     const search = request.query.search?.trim();
     const status = request.query.status?.trim();
 
+    // Search mode (owner request): 'agent' (default) matches the agent name
+    // or ID; 'worker' matches only the worker name.
+    const searchBy = request.query.search_by === 'worker' ? 'worker' : 'agent';
     const where: Record<string, unknown> = {};
     if (search) {
-      where.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        { id: { contains: search } },
-        { workerName: { contains: search, mode: 'insensitive' } },
-      ];
+      where.OR =
+        searchBy === 'worker'
+          ? [{ workerName: { contains: search, mode: 'insensitive' } }]
+          : [
+              { name: { contains: search, mode: 'insensitive' } },
+              { id: { contains: search } },
+            ];
     }
     if (status) {
       if (status === 'ONLINE' || status === 'UNREACHABLE') where.status = status;
