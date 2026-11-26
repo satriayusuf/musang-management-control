@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { BridgeClient, HttpError, NetworkError } from "./client.js";
 import { CommandExecutor } from "./commands.js";
+import { CronManager, SystemCronRunner } from "./cron.js";
 import { ConfigError, loadConfig, type BridgeConfig } from "./config.js";
 import { IdentityStore } from "./identity.js";
 import { DemoMiner } from "./miner-demo.js";
@@ -73,6 +74,7 @@ export class Bridge {
       capabilities: cfg.capabilities,
       bridgeDir: cfg.bridgeDir,
       getMinMemStartGib: () => this.serverCfg.min_mem_start_gib,
+      cron: new CronManager(new SystemCronRunner()),
     });
   }
 

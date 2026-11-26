@@ -4,13 +4,27 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CommandExecutor } from "../src/commands.js";
 import { DEFAULT_CAPABILITIES } from "../src/config.js";
+import { CronManager, type CronRunner } from "../src/cron.js";
 import { DemoMiner } from "../src/miner-demo.js";
 import type { ClaimedCommand } from "../src/types.js";
+
+class FakeCronRunner implements CronRunner {
+  content = "";
+  async read(): Promise<string> {
+    return this.content;
+  }
+  async write(content: string): Promise<void> {
+    this.content = content;
+  }
+}
+
+let cronRunner: FakeCronRunner;
 
 let bridgeDir: string;
 
 beforeEach(() => {
   bridgeDir = mkdtempSync(join(tmpdir(), "muse-bridge-test-"));
+  cronRunner = new FakeCronRunner();
 });
 
 afterEach(() => {
@@ -26,11 +40,12 @@ function makeExecutor(
     capabilities: overrides.capabilities ?? [...DEFAULT_CAPABILITIES],
     bridgeDir,
     getMinMemStartGib: () => overrides.minMem ?? 5,
+    cron: new CronManager(cronRunner),
   });
 }
 
-function cmd(type: string): ClaimedCommand {
-  return { id: "cmd_test", type, payload: {} };
+function cmd(type: string, payload: Record<string, unknown> = {}): ClaimedCommand {
+  return { id: "cmd_test", type, payload };
 }
 
 describe("CommandExecutor", () => {
@@ -107,5 +122,39 @@ describe("CommandExecutor", () => {
 
     const unholdAgain = await executor.execute(cmd("miner.unhold"));
     expect(unholdAgain.status).toBe("succeeded");
+  });
+
+  it("cron.install writes the job, cron.list reads it back, cron.remove deletes it", async () => {
+    const miner = new DemoMiner();
+    const executor = makeExecutor(miner);
+
+    const install = await executor.execute(
+      cmd("cron.install", { name: "bersih-log", schedule: "*/10 * * * *", command: "find ~/logs -name '*.log' -mtime +1 -delete" }),
+    );
+    expect(install.status).toBe("succeeded");
+    expect(cronRunner.content).toContain("# muse-cron:bersih-log");
+
+    const list = await executor.execute(cmd("cron.list"));
+    expect(list.status).toBe("succeeded");
+    expect(JSON.parse(list.output ?? "{}").jobs).toEqual([
+      { name: "bersih-log", schedule: "*/10 * * * *", command: "find ~/logs -name '*.log' -mtime +1 -delete" },
+    ]);
+
+    const remove = await executor.execute(cmd("cron.remove", { name: "bersih-log" }));
+    expect(remove.status).toBe("succeeded");
+    expect(cronRunner.content).not.toContain("muse-cron:bersih-log");
+  });
+
+  it("cron.install rejects an invalid payload and respects capabilities", async () => {
+    const miner = new DemoMiner();
+    const executor = makeExecutor(miner);
+    const bad = await executor.execute(cmd("cron.install", { name: "x", schedule: "bukan-cron", command: "/bin/true" }));
+    expect(bad.status).toBe("failed");
+    expect(bad.error_reason).toBe("INVALID_PAYLOAD");
+
+    const noCap = makeExecutor(miner, { capabilities: ["miner.status"] });
+    const denied = await noCap.execute(cmd("cron.install", { name: "x", schedule: "*/5 * * * *", command: "/bin/true" }));
+    expect(denied.status).toBe("failed");
+    expect(denied.error_reason).toBe("REJECTED_SCOPE");
   });
 });

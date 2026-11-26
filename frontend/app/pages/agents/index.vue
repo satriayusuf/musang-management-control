@@ -101,6 +101,7 @@ function openPairing() {
   pairingError.value = ''
   pairingResult.value = null
   copied.value = false
+  copiedPrompt.value = false
   showPairing.value = true
 }
 
@@ -124,6 +125,49 @@ async function copyCode() {
     await navigator.clipboard.writeText(pairingResult.value.code)
     copied.value = true
     setTimeout(() => (copied.value = false), 2000)
+  } catch {
+    /* clipboard tidak tersedia */
+  }
+}
+
+/**
+ * Prompt siap tempel untuk agent di VM tujuan (permintaan pemilik): kode
+ * pairing, nama agent, dan alamat server sudah terisi otomatis mengikuti
+ * kode yang baru dibuat dan origin dashboard ini.
+ */
+const copiedPrompt = ref(false)
+const agentPrompt = computed(() => {
+  if (!pairingResult.value) return ''
+  const origin = import.meta.client ? window.location.origin : ''
+  const name = plannedName.value.trim()
+  return [
+    `Kamu adalah agent di VM ini. Daftarkan VM ini ke Muse Management Control dengan memasang Muse Bridge memakai kode pairing berikut. Kerjakan langkah-langkahnya secara berurutan:`,
+    ``,
+    `1. Pastikan Node.js 20+ terpasang (cek: node --version).`,
+    `2. Buat folder bridge, lalu unduh bridge dan installer-nya:`,
+    `   mkdir -p ~/workspace/muse-bridge && cd ~/workspace/muse-bridge`,
+    `   curl -fsSLO ${origin}/bridge.cjs`,
+    `   curl -fsSLO ${origin}/install.sh`,
+    `3. Buat file bridge.env di folder yang sama, berisi:`,
+    `   MUSE_SERVER_URL=${origin}`,
+    `   MUSE_PAIRING_CODE=${pairingResult.value.code}`,
+    `   MUSE_AGENT_NAME=${name}`,
+    `   MUSE_WORKER_NAME=<nama worker persis seperti yang terdaftar di pool>`,
+    `   (Opsional) MUSE_MINER_UNIT=<unit systemd program di VM ini> — isi bila perintah jalankan/restart dari dashboard harus bekerja.`,
+    `   (Opsional) MUSE_MINER_STATS_URL=<URL endpoint statistik lokal program> — isi bila ada, agar hashrate dan share terbaca dari VM ini.`,
+    `4. Jalankan installer-nya: bash install.sh`,
+    `5. Periksa layanannya jalan: systemctl status muse-bridge (log: journalctl -u muse-bridge -f).`,
+    ``,
+    `Selesai — agent "${name}" akan muncul di dashboard setelah heartbeat pertamanya diterima. Kode pairing ini hanya berlaku sampai ${fmtDateTime(pairingResult.value.expiresAt)} dan hanya bisa dipakai sekali; jangan bagikan ke siapa pun.`,
+  ].join('\n')
+})
+
+async function copyPrompt() {
+  if (!agentPrompt.value) return
+  try {
+    await navigator.clipboard.writeText(agentPrompt.value)
+    copiedPrompt.value = true
+    setTimeout(() => (copiedPrompt.value = false), 2000)
   } catch {
     /* clipboard tidak tersedia */
   }
@@ -327,6 +371,25 @@ async function doDelete() {
             <span class="font-mono text-ink-200">MUSE_PAIRING_CODE=&lt;kode di atas&gt;</span> dan
             <span class="font-mono text-ink-200">MUSE_SERVER_URL</span> mengarah ke server ini.
             Agent akan muncul pada daftar setelah heartbeat pertamanya diterima.
+          </p>
+        </div>
+        <div class="mt-4">
+          <div class="mb-1.5 flex items-center justify-between">
+            <p class="text-sm font-medium text-ink-300">Prompt untuk Agent</p>
+            <button class="btn-ghost shrink-0 !px-2 !py-1.5 text-xs" @click="copyPrompt">
+              <Check v-if="copiedPrompt" class="h-3.5 w-3.5 text-emerald-400" />
+              <Copy v-else class="h-3.5 w-3.5" />
+              {{ copiedPrompt ? 'Tersalin' : 'Salin Prompt' }}
+            </button>
+          </div>
+          <textarea
+            readonly
+            rows="13"
+            class="field resize-none font-mono !text-xs leading-relaxed"
+            :value="agentPrompt"
+          />
+          <p class="mt-1 text-xs text-ink-500">
+            Tempel prompt ini ke agent di VM tujuan — kode pairing dan alamat server sudah terisi otomatis.
           </p>
         </div>
         <div class="mt-5 flex justify-end">

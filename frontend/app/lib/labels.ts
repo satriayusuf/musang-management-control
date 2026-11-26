@@ -50,6 +50,9 @@ export const COMMAND_TYPES: { value: string; label: string; sensitive: boolean }
   { value: 'miner.reinstall', label: 'Reinstall Miner', sensitive: true },
   { value: 'miner.hold', label: 'Tahan Pemulihan Otomatis', sensitive: true },
   { value: 'miner.unhold', label: 'Lanjutkan Pemulihan Otomatis', sensitive: true },
+  { value: 'cron.install', label: 'Pasang Cron Job', sensitive: true },
+  { value: 'cron.list', label: 'Daftar Cron Job', sensitive: false },
+  { value: 'cron.remove', label: 'Hapus Cron Job', sensitive: true },
 ]
 
 export const SENSITIVE_COMMAND_TYPES = COMMAND_TYPES.filter((t) => t.sensitive).map((t) => t.value)
