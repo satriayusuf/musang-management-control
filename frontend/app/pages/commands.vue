@@ -114,52 +114,6 @@ function parsePayload(): Record<string, unknown> | undefined | null {
   }
 }
 
-// ---------- Form cron terstruktur (CONTRACT-7) ----------
-// Untuk tipe cron.* (tanpa template) payload disusun dari kolom isian,
-// bukan JSON mentah. Validasi penuh tetap dilakukan server dan bridge.
-const cronName = ref('')
-const cronPreset = ref('*/10 * * * *')
-const cronScheduleCustom = ref('')
-const cronCommand = ref('')
-const CRON_PRESETS = [
-  { value: '*/5 * * * *', label: 'Tiap 5 menit (*/5 * * * *)' },
-  { value: '*/10 * * * *', label: 'Tiap 10 menit (*/10 * * * *)' },
-  { value: '*/30 * * * *', label: 'Tiap 30 menit (*/30 * * * *)' },
-  { value: '0 * * * *', label: 'Tiap jam (0 * * * *)' },
-  { value: '0 7 * * *', label: 'Harian jam 07:00 (0 7 * * *)' },
-  { value: 'custom', label: 'Kustom…' },
-]
-const CRON_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
-const isCronType = computed(() => !selectedTemplate.value && effectiveType.value.startsWith('cron.'))
-const cronSchedule = computed(() =>
-  cronPreset.value === 'custom' ? cronScheduleCustom.value.trim() : cronPreset.value,
-)
-
-/** Susun payload cron dari kolom isian; null = tidak valid (formError terisi). */
-function buildCronPayload(): Record<string, unknown> | undefined | null {
-  const name = cronName.value.trim()
-  if (effectiveType.value === 'cron.install' || effectiveType.value === 'cron.remove') {
-    if (!CRON_NAME_RE.test(name)) {
-      formError.value = 'Nama job hanya boleh huruf, angka, titik, strip, dan garis bawah (maks 64 karakter, tanpa spasi).'
-      return null
-    }
-  }
-  if (effectiveType.value === 'cron.install') {
-    const schedule = cronSchedule.value
-    if (schedule.split(/\s+/).filter(Boolean).length !== 5) {
-      formError.value = 'Jadwal harus berupa ekspresi cron 5 kolom, misalnya */10 * * * *. '
-      return null
-    }
-    if (!cronCommand.value.trim()) {
-      formError.value = 'Perintah yang dijalankan cron tidak boleh kosong.'
-      return null
-    }
-    return { name, schedule, command: cronCommand.value.trim() }
-  }
-  if (effectiveType.value === 'cron.remove') return { name }
-  return undefined
-}
-
 // Kunci idempotensi stabil per sesi form: klik ulang / kirim ulang setelah
 // galat memakai kunci yang sama sehingga server mengembalikan perintah yang
 // sudah ada, bukan membuat duplikat. Kunci diganti setelah berhasil.
@@ -175,19 +129,12 @@ async function submitSingle() {
     formError.value = 'Agent ini belum memiliki worker, sehingga perintah miner tidak dapat dibuat.'
     return
   }
-  let payload: Record<string, unknown> | undefined
-  if (isCronType.value) {
-    const built = buildCronPayload()
-    if (built === null) return
-    payload = built
-  } else {
-    const parsed = parsePayload()
-    if (parsed === null) {
-      formError.value = 'Payload harus berupa JSON objek yang valid, atau kosongkan bila tidak diperlukan.'
-      return
-    }
-    payload = parsed
+  const parsed = parsePayload()
+  if (parsed === null) {
+    formError.value = 'Payload harus berupa JSON objek yang valid, atau kosongkan bila tidak diperlukan.'
+    return
   }
+  const payload = parsed
   if (isSensitive.value && !formConfirm.value) {
     formError.value = 'Perintah ini bersifat sensitif. Centang konfirmasi untuk melanjutkan.'
     return
@@ -248,10 +195,6 @@ async function doBroadcast() {
 function submitBroadcast() {
   if (selectedAgentIds.value.length === 0) {
     formError.value = 'Pilih minimal satu agent tujuan broadcast.'
-    return
-  }
-  if (isCronType.value) {
-    formError.value = 'Perintah cron membawa payload per agent dan tidak dapat di-broadcast — gunakan mode Agent Tunggal.'
     return
   }
   if (isSensitive.value) {
@@ -610,60 +553,7 @@ function resultText(c: CommandInfo): string {
               </p>
             </div>
 
-            <!-- Kolom cron terstruktur (CONTRACT-7) -->
-            <div v-if="isCronType" class="space-y-4">
-              <div v-if="effectiveType !== 'cron.list'">
-                <label for="cron-name" class="mb-1.5 block text-sm font-medium text-ink-300">Nama Job</label>
-                <input
-                  id="cron-name"
-                  v-model="cronName"
-                  type="text"
-                  placeholder="cth. bersih-log"
-                  class="field font-mono text-xs"
-                />
-                <p class="mt-1.5 text-xs text-ink-400">
-                  Huruf, angka, titik, strip, garis bawah — tanpa spasi. Memasang ulang nama yang sama akan mengganti job-nya, bukan menggandakan.
-                </p>
-              </div>
-              <template v-if="effectiveType === 'cron.install'">
-                <div>
-                  <label for="cron-preset" class="mb-1.5 block text-sm font-medium text-ink-300">Jadwal</label>
-                  <select id="cron-preset" v-model="cronPreset" class="field">
-                    <option v-for="p in CRON_PRESETS" :key="p.value" :value="p.value">{{ p.label }}</option>
-                  </select>
-                  <input
-                    v-if="cronPreset === 'custom'"
-                    v-model="cronScheduleCustom"
-                    type="text"
-                    placeholder="Ekspresi cron 5 kolom, cth. */10 * * * *"
-                    class="field mt-2 font-mono text-xs"
-                  />
-                </div>
-                <div>
-                  <label for="cron-command" class="mb-1.5 block text-sm font-medium text-ink-300">Perintah yang Dijalankan</label>
-                  <textarea
-                    id="cron-command"
-                    v-model="cronCommand"
-                    rows="2"
-                    spellcheck="false"
-                    placeholder="cth. /home/user/workspace/scripts/laporan.sh --harian"
-                    class="field font-mono text-xs"
-                  />
-                  <p class="mt-1.5 text-xs text-ink-400">
-                    Satu perintah beserta argumennya, dijalankan bridge sebagai pengguna bridge di VM agent — tanpa shell:
-                    tidak ada pipa, pengalihan, variabel, atau ~. Untuk langkah yang kompleks, bungkus dulu dalam satu berkas skrip lalu tunjuk berkas itu di sini.
-                  </p>
-                </div>
-              </template>
-              <p v-if="effectiveType === 'cron.list'" class="text-xs leading-relaxed text-ink-400">
-                Perintah ini tidak membutuhkan isian — hasilnya adalah daftar cron job yang terpasang lewat dashboard pada agent tersebut.
-              </p>
-              <p v-if="targetMode === 'broadcast'" class="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-                Perintah cron dibuat per agent — gunakan mode Agent Tunggal.
-              </p>
-            </div>
-
-            <div v-if="!isCronType">
+            <div>
               <label for="cmd-payload" class="mb-1.5 block text-sm font-medium text-ink-300">
                 Payload JSON <span class="font-normal text-ink-400">(opsional)</span>
               </label>

@@ -1,14 +1,7 @@
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { BridgeClient, HttpError, NetworkError } from "./client.js";
 import { CommandExecutor } from "./commands.js";
-import {
-  CronManager,
-  CronScheduler,
-  ExecFileJobRunner,
-  FileCronStore,
-  type CronRunReport,
-} from "./cron.js";
 import { ConfigError, loadConfig, type BridgeConfig } from "./config.js";
 import { IdentityStore } from "./identity.js";
 import { DemoMiner } from "./miner-demo.js";
@@ -56,8 +49,6 @@ export class Bridge {
   private readonly client: BridgeClient;
   private readonly provider: MinerProvider;
   private readonly executor: CommandExecutor;
-  private readonly cronManager: CronManager;
-  private readonly cronScheduler: CronScheduler;
 
   private serverCfg: ServerConfig = { ...DEFAULT_SERVER_CONFIG };
   private agentId: string | null = null;
@@ -77,24 +68,11 @@ export class Bridge {
             seed: cfg.demoSeed,
           })
         : new RealMiner(cfg.minerUnit, cfg.reinstallScript, cfg.minerStatsUrl);
-    // The bridge schedules dashboard cron jobs itself (CONTRACT-7): one
-    // JSON file per job in <bridgeDir>/jobs/, next to the bridge
-    // identity, so jobs survive VM replacement together with it. Job
-    // commands run without a shell from the workspace directory.
-    this.cronManager = new CronManager(
-      new FileCronStore(join(cfg.bridgeDir, "jobs"), (file) =>
-        log("warn", `cron job file ${file} tidak bisa dibaca — dilewati`),
-      ),
-    );
-    this.cronScheduler = new CronScheduler(this.cronManager, new ExecFileJobRunner(dirname(cfg.bridgeDir)), {
-      onReport: (report) => this.reportCronRun(report),
-    });
     this.executor = new CommandExecutor({
       provider: this.provider,
       capabilities: cfg.capabilities,
       bridgeDir: cfg.bridgeDir,
       getMinMemStartGib: () => this.serverCfg.min_mem_start_gib,
-      cron: this.cronManager,
     });
   }
 
@@ -107,11 +85,6 @@ export class Bridge {
       "info",
       `starting bridge v${BRIDGE_VERSION} mode=${this.cfg.mode} server=${this.cfg.serverUrl} dir=${this.cfg.bridgeDir}`,
     );
-    try {
-      await this.cronManager.startup();
-    } catch (err) {
-      log("warn", `cron startup gagal: ${err instanceof Error ? err.message : String(err)}`);
-    }
     while (!this.shuttingDown) {
       try {
         await this.registerPhase();
@@ -152,33 +125,6 @@ export class Bridge {
       }
     }
     process.exit(0);
-  }
-
-  /** Report one cron job outcome to the server as a CRON_RUN event. */
-  private reportCronRun(report: CronRunReport): void {
-    if (!this.agentId || !this.token) return;
-    const statusText =
-      report.status === "succeeded"
-        ? "berhasil"
-        : report.status === "timeout"
-          ? "melebihi batas waktu"
-          : report.status === "skipped_overlap"
-            ? "dilewati (run sebelumnya masih berjalan)"
-            : "gagal";
-    void this.client
-      .postEvent(
-        this.agentId,
-        this.token,
-        {
-          type: "CRON_RUN",
-          description: `Cron job "${report.name}" ${statusText} (exit ${report.exit_code ?? "—"}, ${(report.duration_ms / 1000).toFixed(1)} detik).`,
-          metadata: { ...report },
-        },
-        5000,
-      )
-      .catch(() => {
-        /* best effort — a missed report never affects scheduling */
-      });
   }
 
   /** Sleep that returns early (true) when shutdown begins. */
@@ -316,9 +262,6 @@ export class Bridge {
     let failures = 0;
     while (!this.shuttingDown) {
       try {
-        // Cron scheduling rides this same loop (CONTRACT-7): one tick per
-        // cycle; due jobs start without blocking heartbeat or commands.
-        await this.cronScheduler.tick().catch(() => {});
         await this.sendHeartbeat();
         const commands = await this.client.pollCommands(this.agentId!, this.token!);
         for (const cmd of commands) {

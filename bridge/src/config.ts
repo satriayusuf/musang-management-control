@@ -10,9 +10,6 @@ export const DEFAULT_CAPABILITIES = [
   "miner.reinstall",
   "miner.hold",
   "miner.unhold",
-  "cron.install",
-  "cron.list",
-  "cron.remove",
 ];
 
 export interface BridgeConfig {

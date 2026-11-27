@@ -1,6 +1,5 @@
 import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CronManager, validateCronPayload, type CronJob } from "./cron.js";
 import type {
   ClaimedCommand,
   CommandResult,
@@ -16,9 +15,6 @@ export const COMMAND_ALLOWLIST = [
   "miner.reinstall",
   "miner.hold",
   "miner.unhold",
-  "cron.install",
-  "cron.list",
-  "cron.remove",
 ] as const;
 
 export interface CommandExecutorDeps {
@@ -29,8 +25,6 @@ export interface CommandExecutorDeps {
   bridgeDir: string;
   /** Live view of the server-provided minimum memory threshold (GiB). */
   getMinMemStartGib: () => number;
-  /** Generic cron job manager (CONTRACT-7); payload-validated before use. */
-  cron: CronManager;
 }
 
 function fmtGib(n: number): string {
@@ -107,39 +101,6 @@ export class CommandExecutor {
             status: "succeeded",
             exit_code: 0,
             output: "Auto-recovery dilanjutkan (flag hold dihapus).",
-          };
-        }
-        case "cron.install": {
-          const invalid = validateCronPayload(cmd.type, cmd.payload);
-          if (invalid) {
-            return { status: "failed", error_reason: "INVALID_PAYLOAD", output: invalid };
-          }
-          const p = cmd.payload as unknown as CronJob;
-          const job: CronJob = { name: p.name, schedule: p.schedule.trim().replace(/\s+/g, " "), command: p.command.trim() };
-          const record = await this.deps.cron.install(job);
-          return {
-            status: "succeeded",
-            exit_code: 0,
-            output: JSON.stringify(record),
-          };
-        }
-        case "cron.list": {
-          const jobs = await this.deps.cron.list();
-          return { status: "succeeded", exit_code: 0, output: JSON.stringify({ jobs }) };
-        }
-        case "cron.remove": {
-          const invalid = validateCronPayload(cmd.type, cmd.payload);
-          if (invalid) {
-            return { status: "failed", error_reason: "INVALID_PAYLOAD", output: invalid };
-          }
-          const name = (cmd.payload as { name: string }).name;
-          const removed = await this.deps.cron.remove(name);
-          return {
-            status: "succeeded",
-            exit_code: 0,
-            output: removed
-              ? `Cron job "${name}" dihapus.`
-              : `Cron job "${name}" tidak ditemukan (sudah tidak ada).`,
           };
         }
         default:

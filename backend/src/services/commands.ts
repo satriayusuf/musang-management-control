@@ -6,7 +6,6 @@
 import type { Agent, Command, PrismaClient, Worker } from '@prisma/client';
 import { newId } from '../lib/crypto';
 import { createAuditLog } from './audit';
-import { validateCronPayload } from './cron-payload';
 import { createEvent } from './events';
 import { getSettings } from './settings';
 import { broadcast } from './ws';
@@ -18,9 +17,6 @@ export const COMMAND_TYPES = [
   'miner.reinstall',
   'miner.hold',
   'miner.unhold',
-  'cron.install',
-  'cron.list',
-  'cron.remove',
 ] as const;
 
 export type CommandType = (typeof COMMAND_TYPES)[number];
@@ -32,8 +28,6 @@ export const SENSITIVE_COMMAND_TYPES = new Set<string>([
   'miner.reinstall',
   'miner.hold',
   'miner.unhold',
-  'cron.install',
-  'cron.remove',
 ]);
 
 /** Types whose success must be verified by a later heartbeat snapshot. */
@@ -91,12 +85,6 @@ export async function createCommand(
   }
   if (SENSITIVE_COMMAND_TYPES.has(type) && input.confirm !== true) {
     throw Object.assign(new Error('CONFIRMATION_REQUIRED'), { statusCode: 400 });
-  }
-  if (type.startsWith('cron.')) {
-    const payloadError = validateCronPayload(type, input.payload);
-    if (payloadError) {
-      throw Object.assign(new Error(payloadError), { statusCode: 400 });
-    }
   }
   if (type === 'miner.run' && worker.status === 'GAGAL_START') {
     throw Object.assign(
