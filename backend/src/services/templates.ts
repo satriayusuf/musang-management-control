@@ -22,6 +22,7 @@ export const DEFAULT_TEMPLATES: DefaultTemplate[] = [
   { name: 'Tahan Auto-Recovery', type: 'miner.hold', description: 'Tahan pemulihan otomatis pada worker ini', sensitive: true },
   { name: 'Lepas Tahan Auto-Recovery', type: 'miner.unhold', description: 'Lanjutkan pemulihan otomatis pada worker ini', sensitive: true },
   { name: 'Reinstall Miner', type: 'miner.reinstall', description: 'Install ulang miner lalu jalankan — wajib terverifikasi heartbeat', sensitive: true },
+  { name: 'Perbarui Bridge', type: 'bridge.update', description: 'Bridge cek versi terbaru di server; bila beda, pasang bundle baru + salinan agent.md terbaru lalu restart sendiri (CONTRACT-10)', sensitive: true },
 ];
 
 /** Insert the default templates that are missing. Idempotent; called on boot. */

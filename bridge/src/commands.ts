@@ -6,6 +6,7 @@ import type {
   ExecOutcome,
   MinerProvider,
 } from "./types.js";
+import { performBridgeUpdate, summarizeUpdate } from "./updater.js";
 
 /** The only command types the bridge will ever execute (contract allowlist). */
 export const COMMAND_ALLOWLIST = [
@@ -15,6 +16,7 @@ export const COMMAND_ALLOWLIST = [
   "miner.reinstall",
   "miner.hold",
   "miner.unhold",
+  "bridge.update",
 ] as const;
 
 export interface CommandExecutorDeps {
@@ -25,6 +27,14 @@ export interface CommandExecutorDeps {
   bridgeDir: string;
   /** Live view of the server-provided minimum memory threshold (GiB). */
   getMinMemStartGib: () => number;
+  /** Configured server base URL — the ONLY origin bridge.update downloads from (CONTRACT-10). */
+  serverUrl: string;
+  /**
+   * Called when bridge.update installed a new bundle. The callback must
+   * only flag the restart: the Bridge exits after the command result
+   * (and a fresh heartbeat) has been delivered.
+   */
+  onSelfRestart?: () => void;
 }
 
 function fmtGib(n: number): string {
@@ -102,6 +112,14 @@ export class CommandExecutor {
             exit_code: 0,
             output: "Auto-recovery dilanjutkan (flag hold dihapus).",
           };
+        }
+        case "bridge.update": {
+          const outcome = await performBridgeUpdate({
+            serverUrl: this.deps.serverUrl,
+            bridgeDir: this.deps.bridgeDir,
+          });
+          if (outcome.bundleUpdated) this.deps.onSelfRestart?.();
+          return { status: "succeeded", exit_code: 0, output: summarizeUpdate(outcome) };
         }
         default:
           return {

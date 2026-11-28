@@ -8,6 +8,7 @@ import { httpError, requireRole, requireUser } from '../plugins/auth';
 import { pairingBodySchema } from '../schemas';
 import { createAuditLog } from '../services/audit';
 import { poolFieldsForAgents } from '../services/pool-status';
+import { loadCombinedStatuses } from '../services/runtime';
 import { getSettings } from '../services/settings';
 import { broadcast } from '../services/ws';
 import type { PoolMonitorService } from '../services/pool';
@@ -166,19 +167,35 @@ export async function dashboardRoutes(app: FastifyInstance, prisma: PrismaClient
     const sessionById = new Map(sessions.map((s) => [s.id, s]));
 
     // Phase 5 (CONTRACT-5 B6): embedded worker objects carry the pool block.
+    const now = new Date();
     const poolFields = await poolFieldsForAgents(
       prisma,
       rows.map((a) => a.id),
-      new Date(),
+      now,
+    );
+    // CONTRACT-7: combined status + runtime block per agent.
+    const combined = await loadCombinedStatuses(
+      prisma,
+      rows.map((a) => a.id),
+      now,
     );
 
     return {
       items: rows.map((a) => {
+        const c = combined.get(a.id) ?? null;
         const dto = toAgentDto(a, {
           current_session: a.currentSessionId ? (sessionById.get(a.currentSessionId) ?? null) : null,
           worker: a.worker ?? null,
+          runtime: c?.state ?? null,
+          combined: c,
         });
-        if (dto.worker) dto.worker = { ...dto.worker, pool: poolFields.get(a.id) ?? null };
+        if (dto.worker) {
+          dto.worker = {
+            ...dto.worker,
+            pool: poolFields.get(a.id) ?? null,
+            ...(c ? { combined_status: c.status, combined_status_reason: c.reason } : {}),
+          };
+        }
         return dto;
       }),
       total,
@@ -216,22 +233,38 @@ export async function dashboardRoutes(app: FastifyInstance, prisma: PrismaClient
           : Promise.resolve(null),
       ]);
 
-      const now = Date.now();
+      const nowMs = Date.now();
       // Phase 5 (CONTRACT-5 B6): pool block on the worker payloads.
       const poolFields = await poolFieldsForAgents(prisma, [agent.id], new Date());
       const poolField = agent.worker ? (poolFields.get(agent.id) ?? null) : null;
-      const agentDto = toAgentDto(agent, { current_session: currentSession, worker: agent.worker ?? null });
-      if (agentDto.worker) agentDto.worker = { ...agentDto.worker, pool: poolField };
+      // CONTRACT-7: combined status + runtime block.
+      const combinedMap = await loadCombinedStatuses(prisma, [agent.id], new Date());
+      const combined = combinedMap.get(agent.id) ?? null;
+      const agentDto = toAgentDto(agent, {
+        current_session: currentSession,
+        worker: agent.worker ?? null,
+        runtime: combined?.state ?? null,
+        combined,
+      });
+      if (agentDto.worker) {
+        agentDto.worker = {
+          ...agentDto.worker,
+          pool: poolField,
+          ...(combined ? { combined_status: combined.status, combined_status_reason: combined.reason } : {}),
+        };
+      }
       return {
         ...agentDto,
         health: {
           status: agent.status,
           last_seen_at: agent.lastSeenAt?.toISOString() ?? null,
           current_session_uptime_sec: currentSession
-            ? Math.max(0, Math.floor((now - currentSession.startedAt.getTime()) / 1000))
+            ? Math.max(0, Math.floor((nowMs - currentSession.startedAt.getTime()) / 1000))
             : null,
         },
-        worker_metrics: agent.worker ? { ...toWorkerDto(agent.worker), pool: poolField } : null,
+        worker_metrics: agent.worker
+          ? { ...toWorkerDto(agent.worker, { combined }), pool: poolField }
+          : null,
         sessions: {
           items: sessionRows.map(toSessionDto),
           total: sessionTotal,

@@ -51,6 +51,11 @@ export interface RegisterResponse {
   agent_token?: string;
   /** Legacy alias some servers use for the same value. */
   token?: string;
+  /**
+   * Raw runtime token (CONTRACT-7) — returned on EVERY registration; the
+   * bridge persists it to runtime-token.json for the Muse runtime.
+   */
+  runtime_token?: string;
   config?: Partial<ServerConfig>;
 }
 

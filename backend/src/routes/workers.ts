@@ -2,11 +2,12 @@
 
 import type { FastifyInstance } from 'fastify';
 import type { PrismaClient } from '@prisma/client';
-import { toAgentDto, toCommandDto, toEventDto, toSessionDto, toWorkerDto } from '../lib/serialize';
+import { toAgentDto, toCommandDto, toEventDto, toRuntimeStateDto, toSessionDto, toWorkerDto } from '../lib/serialize';
 import { httpError, requireRole, requireUser } from '../plugins/auth';
 import { createCommandBodySchema } from '../schemas';
 import { createCommand } from '../services/commands';
 import { poolFieldsForAgents } from '../services/pool-status';
+import { loadCombinedStatuses } from '../services/runtime';
 import { getTemplateOrThrow, mergePayload } from '../services/templates';
 import type { PoolMonitorService } from '../services/pool';
 
@@ -32,23 +33,31 @@ export async function workerRoutes(app: FastifyInstance, prisma: PrismaClient, d
           include: { agent: true },
         }),
       ]);
+      const now = new Date();
       const poolFields = await poolFieldsForAgents(
         prisma,
         rows.map((w) => w.agentId),
-        new Date(),
+        now,
+      );
+      const combined = await loadCombinedStatuses(
+        prisma,
+        rows.map((w) => w.agentId),
+        now,
       );
       return {
         items: rows.map((w) => ({
-          ...toWorkerDto(w),
+          ...toWorkerDto(w, { combined: combined.get(w.agentId) ?? null }),
           pool: poolFields.get(w.agentId) ?? null,
           agent: {
             id: w.agent.id,
             name: w.agent.name,
             status: w.agent.status,
+            last_seen_at: w.agent.lastSeenAt?.toISOString() ?? null,
             replacement_count: w.agent.replacementCount,
             // "Tanggal ditambahkan" untuk baris worker = tanggal agent-nya
             // terdaftar; record Worker sendiri tidak menyimpan created_at.
             created_at: w.agent.createdAt.toISOString(),
+            runtime: toRuntimeStateDto(combined.get(w.agentId)?.state ?? null),
           },
         })),
         total,
@@ -80,11 +89,18 @@ export async function workerRoutes(app: FastifyInstance, prisma: PrismaClient, d
       prisma.event.findMany({ where: { workerId: worker.id }, orderBy: { createdAt: 'desc' }, take: 20 }),
     ]);
     const currentSession = sessions.find((s) => s.id === worker.agent.currentSessionId) ?? null;
-    const poolFields = await poolFieldsForAgents(prisma, [worker.agentId], new Date());
+    const now = new Date();
+    const poolFields = await poolFieldsForAgents(prisma, [worker.agentId], now);
+    const combinedMap = await loadCombinedStatuses(prisma, [worker.agentId], now);
+    const combined = combinedMap.get(worker.agentId) ?? null;
     return {
-      ...toWorkerDto(worker),
+      ...toWorkerDto(worker, { combined }),
       pool: poolFields.get(worker.agentId) ?? null,
-      agent: toAgentDto(worker.agent, { current_session: currentSession }),
+      agent: toAgentDto(worker.agent, {
+        current_session: currentSession,
+        runtime: combined?.state ?? null,
+        combined,
+      }),
       session_timeline: sessions.map(toSessionDto),
       recent_events: events.map(toEventDto),
       pool_configured: deps.poolMonitor.isConfigured(),

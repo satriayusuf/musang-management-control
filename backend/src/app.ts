@@ -31,6 +31,7 @@ import { commandRoutes } from './routes/commands';
 import { dashboardRoutes } from './routes/dashboard';
 import { eventRoutes } from './routes/events';
 import { healthRoutes } from './routes/health';
+import { questionRoutes } from './routes/questions';
 import { settingsRoutes } from './routes/settings';
 import { templateRoutes } from './routes/templates';
 import { workerRoutes } from './routes/workers';
@@ -102,6 +103,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
   await dashboardRoutes(app, prisma, deps);
   await workerRoutes(app, prisma, deps);
   await commandRoutes(app, prisma);
+  await questionRoutes(app, prisma);
   await templateRoutes(app, prisma);
   await alertRoutes(app, prisma);
   await eventRoutes(app, prisma);

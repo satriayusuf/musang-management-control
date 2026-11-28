@@ -13,6 +13,7 @@
 import type { Agent, PrismaClient, Session } from '@prisma/client';
 import { generateAgentToken, isPairingCodeExpired, newId, sha256Hex } from '../lib/crypto';
 import { createEvent } from './events';
+import { issueRuntimeToken } from './runtime';
 import { broadcast } from './ws';
 
 export type BootTransition = 'SAME_BOOT' | 'VM_REPLACED' | 'REBOOT';
@@ -44,6 +45,8 @@ export interface RegisterResult {
   session: Session;
   /** Raw agent token — present ONLY on first registration via pairing code. */
   agentToken?: string;
+  /** Raw runtime token (CONTRACT-7) — issued/rotated on EVERY registration. */
+  runtimeToken: string;
   isNewAgent: boolean;
   transition: BootTransition | 'FIRST';
 }
@@ -113,6 +116,7 @@ export async function registerWithPairing(
     data: { usedAt: now, usedByAgentId: agent.id },
   });
   await ensureWorker(prisma, updated, body.worker_name);
+  const runtimeToken = await issueRuntimeToken(prisma, agent.id);
 
   await createEvent(prisma, {
     agentId: agent.id,
@@ -123,7 +127,7 @@ export async function registerWithPairing(
   broadcast('agent.registered', { agent_id: agent.id, session_id: session.id });
   broadcast('session.started', { agent_id: agent.id, session_id: session.id, session_no: 1 });
 
-  return { agent: updated, session, agentToken: rawToken, isNewAgent: true, transition: 'FIRST' };
+  return { agent: updated, session, agentToken: rawToken, runtimeToken, isNewAgent: true, transition: 'FIRST' };
 }
 
 /** Re-attach of an already-registered agent (token already verified by caller). */
@@ -133,6 +137,9 @@ export async function reattachAgent(
   body: RegisterBody,
 ): Promise<RegisterResult> {
   const now = new Date();
+  // CONTRACT-7: every registration rotates the runtime token; the bridge
+  // persists the fresh one from this response.
+  const runtimeToken = await issueRuntimeToken(prisma, agent.id);
   const wasUnreachable = agent.status !== 'ONLINE';
   const currentSession = agent.currentSessionId
     ? await prisma.session.findUnique({ where: { id: agent.currentSessionId } })
@@ -178,7 +185,7 @@ export async function reattachAgent(
       broadcast('agent.reconnected', { agent_id: agent.id, session_id: currentSession.id });
       broadcast('agent.status_changed', { agent_id: agent.id, status: 'ONLINE' });
     }
-    return { agent: updated, session: currentSession, isNewAgent: false, transition };
+    return { agent: updated, session: currentSession, runtimeToken, isNewAgent: false, transition };
   }
 
   // New session: close the previous one at takeover time (now).
@@ -245,5 +252,5 @@ export async function reattachAgent(
     broadcast('agent.status_changed', { agent_id: agent.id, status: 'ONLINE' });
   }
 
-  return { agent: updated, session, isNewAgent: false, transition };
+  return { agent: updated, session, runtimeToken, isNewAgent: false, transition };
 }

@@ -3,6 +3,8 @@
 
 import type {
   Agent,
+  AgentQuestion,
+  AgentRuntimeState,
   AlertDelivery,
   AlertNotification,
   AutomationRule,
@@ -31,7 +33,47 @@ export function toSessionDto(s: Session) {
   };
 }
 
-export function toAgentDto(a: Agent, extras?: { current_session?: Session | null; worker?: Worker | null }) {
+/**
+ * CONTRACT-7 §6: the runtime block on agent DTOs. Token VALUE is never
+ * exposed — only whether one was issued, plus the last state the runtime
+ * reported (transition + snapshot).
+ */
+export function toRuntimeStateDto(s: AgentRuntimeState | null | undefined) {
+  if (!s) return null;
+  const payload = (s.lastTransitionPayload ?? null) as Record<string, unknown> | null;
+  return {
+    token_issued: Boolean(s.runtimeTokenHash),
+    token_issued_at: iso(s.runtimeTokenIssuedAt),
+    last_contact_at: iso(s.lastContactAt),
+    last_event_type: s.lastEventType,
+    last_event_at: iso(s.lastEventAt),
+    last_transition_type: s.lastTransitionType,
+    last_transition_at: iso(s.lastTransitionAt),
+    transition_reason: payload && typeof payload.reason === 'string' ? payload.reason : null,
+    boot_time: iso(s.bootTime),
+    snapshot:
+      s.lastSnapshotAt != null
+        ? {
+            at: iso(s.lastSnapshotAt),
+            hashrate_hs: s.snapshotHashrateHs,
+            shares_local: s.snapshotSharesLocal,
+            pool_accepted: s.snapshotPoolAccepted,
+            pool_last_share_at: iso(s.snapshotPoolLastShareAt),
+            mem_available_gib: s.snapshotMemAvailableGib,
+          }
+        : null,
+  };
+}
+
+export function toAgentDto(
+  a: Agent,
+  extras?: {
+    current_session?: Session | null;
+    worker?: Worker | null;
+    runtime?: AgentRuntimeState | null;
+    combined?: { status: string; reason: string } | null;
+  },
+) {
   return {
     id: a.id,
     name: a.name,
@@ -51,10 +93,17 @@ export function toAgentDto(a: Agent, extras?: { current_session?: Session | null
       ? { current_session: extras.current_session ? toSessionDto(extras.current_session) : null }
       : {}),
     ...(extras?.worker !== undefined ? { worker: extras.worker ? toWorkerDto(extras.worker) : null } : {}),
+    ...(extras?.runtime !== undefined ? { runtime: toRuntimeStateDto(extras.runtime) } : {}),
+    ...(extras?.combined !== undefined && extras.combined
+      ? { combined_status: extras.combined.status, combined_status_reason: extras.combined.reason }
+      : {}),
   };
 }
 
-export function toWorkerDto(w: Worker, extras?: { pool?: unknown }) {
+export function toWorkerDto(
+  w: Worker,
+  extras?: { pool?: unknown; combined?: { status: string; reason: string } | null },
+) {
   return {
     id: w.id,
     agent_id: w.agentId,
@@ -62,6 +111,11 @@ export function toWorkerDto(w: Worker, extras?: { pool?: unknown }) {
     pool_address: w.poolAddress,
     status: w.status,
     status_reason: w.statusReason,
+    // CONTRACT-7 §4/§6: server-computed combined status (runtime >
+    // bridge > pool), attached by routes that loaded the runtime state.
+    ...(extras?.combined
+      ? { combined_status: extras.combined.status, combined_status_reason: extras.combined.reason }
+      : {}),
     status_since: iso(w.statusSince),
     last_share_at: iso(w.lastShareAt),
     last_local_share_at: iso(w.lastLocalShareAt),
@@ -202,6 +256,22 @@ export function toRuleDto(r: AutomationRule) {
     fire_count_today: r.fireCountToday,
     created_at: iso(r.createdAt),
     updated_at: iso(r.updatedAt),
+  };
+}
+
+/** CONTRACT-8: one broadcast-question row. CONTRACT-9 adds `kind`. */
+export function toQuestionDto(q: AgentQuestion) {
+  return {
+    id: q.id,
+    agent_id: q.agentId,
+    broadcast_id: q.broadcastId,
+    kind: q.kind,
+    question: q.question,
+    asked_by: q.askedBy,
+    asked_at: iso(q.askedAt),
+    status: q.status,
+    answer: q.answer,
+    answered_at: iso(q.answeredAt),
   };
 }
 

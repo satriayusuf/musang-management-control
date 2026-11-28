@@ -39,6 +39,21 @@ function templateName(id?: string | null): string {
   return templates.value.find((t) => t.id === id)?.name ?? id
 }
 
+/** Status tampilan perintah (CONTRACT-7 §5): ditolak ≠ gagal; antrean untuk VM mati/pulih = Menunggu VM. */
+function isRejectedCommand(c: CommandInfo): boolean {
+  if (c.status !== 'FAILED') return false
+  const r = c.result as Record<string, unknown> | null
+  return r?.reported_status === 'rejected' || c.error_reason === 'LOW_MEMORY'
+}
+function commandChipStatus(c: CommandInfo): string {
+  if (isRejectedCommand(c)) return 'REJECTED'
+  if (c.status === 'QUEUED') {
+    const combined = agents.value.find((a) => a.id === c.agent_id)?.combined_status
+    if (combined === 'PULIH' || combined === 'MATI') return 'WAITING_VM'
+  }
+  return c.status
+}
+
 async function loadAgents() {
   try {
     const res = await api.listAgents({ page: 1, page_size: 200 })
@@ -423,6 +438,7 @@ watch([filterAgent, filterStatus, filterType], () => {
 })
 
 function resultText(c: CommandInfo): string {
+  if (isRejectedCommand(c)) return `Ditolak: ${c.error_reason ?? 'tanpa alasan'}`
   if (c.error_reason) return c.error_reason
   if (c.status === 'SUCCEEDED') return 'Selesai dan terverifikasi'
   if (c.result && typeof c.result === 'object') {
@@ -682,7 +698,7 @@ function resultText(c: CommandInfo): string {
                   <span v-if="c.template_id" class="mt-0.5 block text-[11px] text-ink-400">Template: {{ templateName(c.template_id) }}</span>
                   <span v-if="c.batch_id" class="block font-mono text-[11px] text-ink-400">Batch {{ c.batch_id }}</span>
                 </td>
-                <td><StatusChip :status="c.status" kind="command" /></td>
+                <td><StatusChip :status="commandChipStatus(c)" kind="command" /></td>
                 <td class="text-xs">{{ c.requested_by || '—' }}</td>
                 <td class="whitespace-nowrap text-xs">{{ c.status === 'QUEUED' || c.status === 'SENT' ? fmtDateTime(c.expires_at) : '—' }}</td>
                 <td class="max-w-64 truncate text-xs" :title="resultText(c)">{{ resultText(c) }}</td>
@@ -762,7 +778,7 @@ function resultText(c: CommandInfo): string {
                         </NuxtLink>
                       </td>
                       <td class="font-mono text-xs">{{ c.type }}</td>
-                      <td><StatusChip :status="c.status" kind="command" /></td>
+                      <td><StatusChip :status="commandChipStatus(c)" kind="command" /></td>
                       <td class="whitespace-nowrap text-xs">{{ fmtDateTime(c.created_at) }}</td>
                       <td class="max-w-56 truncate text-xs" :title="resultText(c)">{{ resultText(c) }}</td>
                     </tr>

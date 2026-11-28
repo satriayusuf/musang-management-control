@@ -6,9 +6,9 @@
 //   POST /api/agents/:id/commands/:cmdId/result
 //   POST /api/agents/:id/events
 
-import type { FastifyInstance } from 'fastify';
-import type { PrismaClient } from '@prisma/client';
-import { authenticateAgent, bearerToken, httpError } from '../plugins/auth';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { Agent, PrismaClient } from '@prisma/client';
+import { authenticateAgent, authenticateRuntime, bearerToken, httpError, isAgentTokenRequest } from '../plugins/auth';
 import { verifyAgentToken } from '../lib/crypto';
 import { toCommandDto } from '../lib/serialize';
 import {
@@ -21,11 +21,14 @@ import {
 import {
   ackCommand,
   claimCommands,
+  listQueuedForRuntime,
   reportCommandResult,
+  reportRuntimeCommandResult,
   type CommandResultBody,
 } from '../services/commands';
 import { createEvent } from '../services/events';
 import { processHeartbeat, type HeartbeatBody } from '../services/heartbeat';
+import { ingestRuntimeEvent, validateRuntimeEvent, type RuntimeEventBody } from '../services/runtime';
 import { getSettings } from '../services/settings';
 import { reattachAgent, registerWithPairing, type RegisterBody } from '../services/session';
 import type { PoolMonitorService } from '../services/pool';
@@ -39,6 +42,24 @@ function assertSessionCurrent(agentCurrentSessionId: string | null, sessionId?: 
   if (sessionId && agentCurrentSessionId && sessionId !== agentCurrentSessionId) {
     throw httpError(409, 'SESSION_SUPERSEDED');
   }
+}
+
+/**
+ * CONTRACT-7 dual auth for the shared agent paths (commands + events):
+ * the bridge's agent token keeps its existing behaviour; the runtime
+ * token selects the runtime behaviour. Returns which kind authenticated.
+ * Throws 404 (unknown agent) / 401 (neither token valid).
+ */
+async function authenticateAgentOrRuntime(
+  prisma: PrismaClient,
+  request: FastifyRequest,
+  agentId: string,
+): Promise<{ agent: Agent; kind: 'agent' | 'runtime' }> {
+  const agent = await prisma.agent.findUnique({ where: { id: agentId } });
+  if (!agent) throw httpError(404, 'AGENT_NOT_FOUND');
+  if (await isAgentTokenRequest(prisma, request, agent)) return { agent, kind: 'agent' };
+  const runtimeAgent = await authenticateRuntime(prisma, request, agentId);
+  return { agent: runtimeAgent, kind: 'runtime' };
 }
 
 export async function agentRoutes(app: FastifyInstance, prisma: PrismaClient, deps: Deps): Promise<void> {
@@ -63,6 +84,7 @@ export async function agentRoutes(app: FastifyInstance, prisma: PrismaClient, de
         return reply.status(201).send({
           agent_id: result.agent.id,
           agent_token: result.agentToken,
+          runtime_token: result.runtimeToken,
           session_id: result.session.id,
           session_no: result.session.sessionNo,
           config,
@@ -80,6 +102,7 @@ export async function agentRoutes(app: FastifyInstance, prisma: PrismaClient, de
       const result = await reattachAgent(prisma, agent, body);
       return reply.send({
         agent_id: result.agent.id,
+        runtime_token: result.runtimeToken,
         session_id: result.session.id,
         session_no: result.session.sessionNo,
         config,
@@ -107,15 +130,30 @@ export async function agentRoutes(app: FastifyInstance, prisma: PrismaClient, de
     },
   );
 
-  // --- Command polling (atomic claim) ---
+  // --- Command polling ---
+  // Bridge (agent token): atomic claim, QUEUED -> SENT, as before.
+  // Runtime (runtime token, CONTRACT-7 §5): read-only view of the queue —
+  // rows stay QUEUED until the runtime posts a result.
   app.get<{ Params: { id: string }; Querystring: { status?: string; session_id?: string } }>(
     '/api/agents/:id/commands',
     async (request) => {
-      const agent = await authenticateAgent(prisma, request, request.params.id);
-      assertSessionCurrent(agent.currentSessionId, request.query.session_id);
+      const { agent, kind } = await authenticateAgentOrRuntime(prisma, request, request.params.id);
       if (request.query.status && request.query.status !== 'queued') {
         return { commands: [] };
       }
+      if (kind === 'runtime') {
+        const queued = await listQueuedForRuntime(prisma, agent.id);
+        return {
+          commands: queued.map((c) => ({
+            id: c.id,
+            type: c.type,
+            payload: c.payload,
+            created_at: c.createdAt.toISOString(),
+            expires_at: c.expiresAt.toISOString(),
+          })),
+        };
+      }
+      assertSessionCurrent(agent.currentSessionId, request.query.session_id);
       const claimed = await claimCommands(prisma, agent.id);
       return {
         commands: claimed.map((c) => ({
@@ -141,27 +179,45 @@ export async function agentRoutes(app: FastifyInstance, prisma: PrismaClient, de
     },
   );
 
-  // --- Command result ---
+  // --- Command result (bridge agent token, or runtime token per CONTRACT-7 §5) ---
   app.post<{ Params: { id: string; cmdId: string }; Body: CommandResultBody & { session_id?: string } }>(
     '/api/agents/:id/commands/:cmdId/result',
     { schema: { body: resultBodySchema } },
     async (request) => {
-      const agent = await authenticateAgent(prisma, request, request.params.id);
+      const { agent, kind } = await authenticateAgentOrRuntime(prisma, request, request.params.id);
+      if (kind === 'runtime') {
+        const { command, verification } = await reportRuntimeCommandResult(
+          prisma,
+          agent,
+          request.params.cmdId,
+          request.body,
+        );
+        return { ...toCommandDto(command), verification };
+      }
       assertSessionCurrent(agent.currentSessionId, request.body?.session_id);
       const { command, verification } = await reportCommandResult(prisma, agent, request.params.cmdId, request.body);
       return { ...toCommandDto(command), verification };
     },
   );
 
-  // --- Ad-hoc bridge events ---
+  // --- Events ---
+  // Bridge (agent token): ad-hoc events, as before.
+  // Runtime (runtime token, CONTRACT-7 §3): the strict runtime contract —
+  // flat payload, per-type required fields; any violation is a 400 with
+  // NO state change, a wrong/missing token a 401 with NO state change.
   app.post<{
     Params: { id: string };
-    Body: { type: string; description?: string; metadata?: Record<string, unknown>; session_id?: string };
+    Body: { type: string; description?: string; metadata?: Record<string, unknown>; session_id?: string } & RuntimeEventBody;
   }>(
     '/api/agents/:id/events',
     { schema: { body: agentEventBodySchema } },
     async (request, reply) => {
-      const agent = await authenticateAgent(prisma, request, request.params.id);
+      const { agent, kind } = await authenticateAgentOrRuntime(prisma, request, request.params.id);
+      if (kind === 'runtime') {
+        const validated = validateRuntimeEvent(request.body);
+        await ingestRuntimeEvent(prisma, agent.id, validated);
+        return reply.status(201).send({ ok: true });
+      }
       const worker = await prisma.worker.findUnique({ where: { agentId: agent.id } });
       const metadata = { ...(request.body.metadata ?? {}) };
       if (request.body.session_id) metadata.session_id = request.body.session_id;

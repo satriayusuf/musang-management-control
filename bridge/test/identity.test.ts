@@ -60,4 +60,18 @@ describe("IdentityStore", () => {
     writeFileSync(store.identityPath, "{not json", "utf8");
     expect(store.loadIdentity()).toBeNull();
   });
+
+  it("stores the runtime token as JSON with mode 0600 and round-trips it (CONTRACT-7)", () => {
+    const store = new IdentityStore(dir);
+    expect(store.loadRuntimeToken()).toBeNull();
+    store.saveRuntimeToken("runtime-secret", "agt_123");
+    expect(store.loadRuntimeToken()).toBe("runtime-secret");
+    expect(statSync(store.runtimeTokenPath).mode & 0o777).toBe(0o600);
+    // Overwrite (rotation) keeps the mode and replaces the value.
+    store.saveRuntimeToken("runtime-secret-2", "agt_123");
+    expect(store.loadRuntimeToken()).toBe("runtime-secret-2");
+    expect(statSync(store.runtimeTokenPath).mode & 0o777).toBe(0o600);
+    // The agent token file is a different file and stays untouched.
+    expect(store.loadToken()).toBeNull();
+  });
 });

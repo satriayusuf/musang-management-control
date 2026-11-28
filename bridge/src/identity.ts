@@ -14,8 +14,11 @@ import type { Identity } from "./types.js";
  *
  * Layout inside the bridge dir (default ~/workspace/muse-bridge, the only
  * directory that survives VM replacement):
- *   identity.json — { agent_id, name, worker_name }
- *   token         — raw agent token, file mode 0600, never logged
+ *   identity.json      — { agent_id, name, worker_name }
+ *   token              — raw agent token, file mode 0600, never logged
+ *   runtime-token.json — { token, agent_id, saved_at } for the Muse
+ *                        runtime on this VM (CONTRACT-7), mode 0600,
+ *                        never logged; the bridge never uses it itself
  */
 export class IdentityStore {
   readonly dir: string;
@@ -30,6 +33,10 @@ export class IdentityStore {
 
   get tokenPath(): string {
     return join(this.dir, "token");
+  }
+
+  get runtimeTokenPath(): string {
+    return join(this.dir, "runtime-token.json");
   }
 
   private ensureDir(): void {
@@ -81,6 +88,34 @@ export class IdentityStore {
       unlinkSync(this.tokenPath);
     } catch {
       /* already gone */
+    }
+  }
+
+  /**
+   * CONTRACT-7: persist the runtime token from a registration response so
+   * the Muse runtime on this VM can read it. Mode 0600; the value is
+   * never logged. Overwrites on every registration (server rotates).
+   */
+  saveRuntimeToken(token: string, agentId: string): void {
+    this.ensureDir();
+    const body = JSON.stringify(
+      { token, agent_id: agentId, saved_at: new Date().toISOString() },
+      null,
+      2,
+    ) + "\n";
+    writeFileSync(this.runtimeTokenPath, body, { encoding: "utf8", mode: 0o600 });
+    chmodSync(this.runtimeTokenPath, 0o600);
+  }
+
+  loadRuntimeToken(): string | null {
+    if (!existsSync(this.runtimeTokenPath)) return null;
+    try {
+      const parsed = JSON.parse(readFileSync(this.runtimeTokenPath, "utf8")) as Partial<{
+        token: string;
+      }>;
+      return typeof parsed.token === "string" && parsed.token !== "" ? parsed.token : null;
+    } catch {
+      return null;
     }
   }
 }

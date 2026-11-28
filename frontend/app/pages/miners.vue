@@ -2,7 +2,7 @@
 import { Play, Info, PauseCircle, PlayCircle, Search } from 'lucide-vue-next'
 import { api, type WorkerInfo, type AgentSummary } from '~/lib/api'
 import { fmtDateTime, fmtRelative, fmtHashrate, fmtGiB, fmtNumber, newIdempotencyKey } from '~/lib/format'
-import { commandTypeLabel } from '~/lib/labels'
+import { commandTypeLabel, workerStatusLabel } from '~/lib/labels'
 
 const workers = ref<WorkerInfo[]>([])
 const agentsById = ref<Record<string, AgentSummary>>({})
@@ -126,6 +126,29 @@ function runBlocked(w: WorkerInfo): string {
   return ''
 }
 
+// ---------- CONTRACT-7: hashrate snapshot runtime sebagai cadangan ----------
+
+/** Samakan dengan BRIDGE_SILENT_SEC server (300 detik). */
+const BRIDGE_SILENT_MS = 300_000
+
+function bridgeSilent(w: WorkerInfo): boolean {
+  const ls = agentOf(w)?.last_seen_at
+  if (!ls) return true
+  const t = Date.parse(ls)
+  return Number.isNaN(t) || nowTick.value - t > BRIDGE_SILENT_MS
+}
+
+function runtimeSnapshot(w: WorkerInfo) {
+  return agentOf(w)?.runtime?.snapshot ?? null
+}
+
+/** Hashrate yang ditampilkan: bridge bila segar; bila bridge diam dan ada
+ * snapshot runtime, pakai angka snapshot (diberi label + umur di template). */
+function useSnapshotHashrate(w: WorkerInfo): boolean {
+  const snap = runtimeSnapshot(w)
+  return bridgeSilent(w) && snap != null && typeof snap.hashrate_hs === 'number'
+}
+
 const runTarget = ref<WorkerInfo | null>(null)
 
 // ---------- Fase 2: tahan / lepas tahan auto-recovery ----------
@@ -178,7 +201,7 @@ async function runPendingHold() {
   <div>
     <div class="mb-6">
       <h1 class="text-xl font-semibold text-white">Miner</h1>
-      <p class="mt-0.5 text-sm text-ink-400">Performa dan status setiap worker miner dari laporan bridge dan pemeriksaan pool.</p>
+      <p class="mt-0.5 text-sm text-ink-400">Performa dan status setiap worker. Status utama dihitung server dari laporan runtime Muse, lalu bridge, lalu pool sebagai pembanding.</p>
     </div>
 
     <div
@@ -288,12 +311,19 @@ async function runPendingHold() {
                 <span v-else>—</span>
               </td>
               <td>
-                <StatusChip :status="w.status" kind="worker" />
+                <StatusChip :status="w.combined_status" kind="combined" />
                 <span v-if="holdActiveOf(w)" class="mt-1 block"><HoldBadge :active="true" /></span>
-                <p v-if="w.status_reason" class="mt-1 max-w-52 text-xs leading-snug text-ink-400">{{ w.status_reason }}</p>
+                <p v-if="w.combined_status_reason" class="mt-1 max-w-52 text-xs leading-snug text-ink-400">{{ w.combined_status_reason }}</p>
+                <p class="mt-1 text-[11px] leading-snug text-ink-500">Bridge/pool: {{ workerStatusLabel(w.status) }}<span v-if="w.status_reason"> — {{ w.status_reason }}</span></p>
               </td>
               <td class="font-mono text-xs">{{ w.miner_service_state || '—' }}</td>
-              <td>{{ fmtHashrate(w.hashrate_hs) }}</td>
+              <td>
+                <template v-if="useSnapshotHashrate(w)">
+                  {{ fmtHashrate(runtimeSnapshot(w)!.hashrate_hs) }}
+                  <span class="block text-[11px] leading-snug text-sky-300" :title="fmtDateTime(runtimeSnapshot(w)!.at)">Snapshot runtime · {{ fmtRelative(runtimeSnapshot(w)!.at, nowTick) }}</span>
+                </template>
+                <template v-else>{{ fmtHashrate(w.hashrate_hs) }}</template>
+              </td>
               <td>{{ w.pool && typeof w.pool.hashrate === 'number' ? fmtHashrate(w.pool.hashrate) : '—' }}</td>
               <td class="text-emerald-400">{{ fmtNumber(w.accepted_shares) }}</td>
               <td class="text-red-400">{{ fmtNumber(w.rejected_shares) }}</td>

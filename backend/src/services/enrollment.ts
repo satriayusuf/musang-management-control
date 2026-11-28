@@ -16,6 +16,7 @@ import type { Agent, PrismaClient, Session } from '@prisma/client';
 import { generateAgentToken, hashEquals, newId, sha256Hex } from '../lib/crypto';
 import { createAuditLog } from './audit';
 import { createEvent } from './events';
+import { issueRuntimeToken } from './runtime';
 import { ensureWorker } from './session';
 import { broadcast } from './ws';
 
@@ -134,6 +135,8 @@ export interface SelfRegisterResult {
   agent: Agent;
   session: Session;
   agentToken: string;
+  /** Raw runtime token (CONTRACT-7) — the bridge persists it for the runtime. */
+  runtimeToken: string;
 }
 
 function keysMatch(provided: string, stored: string): boolean {
@@ -193,6 +196,7 @@ export async function selfRegister(
     data: { currentSessionId: session.id },
   });
   await ensureWorker(prisma, updated, body.worker_name);
+  const runtimeToken = await issueRuntimeToken(prisma, agent.id);
 
   await createEvent(prisma, {
     agentId: agent.id,
@@ -209,5 +213,5 @@ export async function selfRegister(
   broadcast('agent.registered', { agent_id: agent.id, session_id: session.id });
   broadcast('session.started', { agent_id: agent.id, session_id: session.id, session_no: 1 });
 
-  return { agent: updated, session, agentToken: rawToken };
+  return { agent: updated, session, agentToken: rawToken, runtimeToken };
 }

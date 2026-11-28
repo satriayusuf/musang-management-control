@@ -26,6 +26,7 @@ function makeExecutor(
     capabilities: overrides.capabilities ?? [...DEFAULT_CAPABILITIES],
     bridgeDir,
     getMinMemStartGib: () => overrides.minMem ?? 5,
+    serverUrl: "http://127.0.0.1:9", // unreachable on purpose; only bridge.update would use it
   });
 }
 

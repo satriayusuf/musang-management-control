@@ -46,8 +46,10 @@ model Agent {
   heartbeats Heartbeat[]
   worker     Worker?
   poolSnapshot PoolSnapshot?
+  runtimeState AgentRuntimeState?
   commands   Command[]
   events     Event[]
+  questions  AgentQuestion[]
   alertNotifications AlertNotification[]
 
   @@index([status])
@@ -234,6 +236,70 @@ model PoolSnapshot {
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
   @@map("pool_snapshots")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 models (CONTRACT-7): runtime monitoring state.
+// One row per agent, replace semantics: the LAST runtime event/snapshot and
+// the runtime token hash. The runtime (Muse on the agent VM) reports
+// VM_REPLACED / RECOVERY_OK / RECOVERY_FAILED / SNAPSHOT with this token;
+// the server computes the combined dashboard status from it + heartbeats.
+// ---------------------------------------------------------------------------
+
+model AgentRuntimeState {
+  agentId               String    @id @map("agent_id")
+  runtimeTokenHash      String?   @map("runtime_token_hash")
+  runtimeTokenIssuedAt  DateTime? @map("runtime_token_issued_at")
+  // Latest TRANSITION event (VM_REPLACED | RECOVERY_OK | RECOVERY_FAILED).
+  // SNAPSHOT never overwrites these fields.
+  lastTransitionType    String?   @map("last_transition_type")
+  lastTransitionAt      DateTime? @map("last_transition_at")
+  lastTransitionPayload Json?     @map("last_transition_payload")
+  bootTime              DateTime? @map("boot_time")
+  // Latest SNAPSHOT event fields.
+  lastSnapshotAt        DateTime? @map("last_snapshot_at")
+  snapshotHashrateHs    Float?    @map("snapshot_hashrate_hs")
+  snapshotSharesLocal   Int?      @map("snapshot_shares_local")
+  snapshotPoolAccepted  Int?      @map("snapshot_pool_accepted")
+  snapshotPoolLastShareAt DateTime? @map("snapshot_pool_last_share_at")
+  snapshotMemAvailableGib Float?  @map("snapshot_mem_available_gib")
+  // Liveness clocks: lastContactAt = server receive time of ANY valid
+  // runtime event; lastEventType/lastEventAt = the literally latest event.
+  lastContactAt         DateTime? @map("last_contact_at")
+  lastEventType         String?   @map("last_event_type")
+  lastEventAt           DateTime? @map("last_event_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@map("agent_runtime_states")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8 model (CONTRACT-8): broadcast questions. One row per
+// (agent, broadcast). A question is NOT a command: it is answered by the
+// agent's Muse RUNTIME (runtime-token endpoints only, the bridge never
+// sees it), read-only, with a short text answer. Queued rows older than
+// QUESTION_TTL_SEC (30 min) expire lazily on read.
+// ---------------------------------------------------------------------------
+
+model AgentQuestion {
+  id          String    @id // UUID (spec: plain UUID, no prefix)
+  agentId     String    @map("agent_id")
+  broadcastId String    @map("broadcast_id") // UUID grouping one fan-out
+  kind        String    @default("question") // question | instruction (CONTRACT-9)
+  question    String
+  askedBy     String    @map("asked_by")
+  askedAt     DateTime  @default(now()) @map("asked_at")
+  status      String    @default("queued") // queued | answered | expired
+  answer      String?
+  answeredAt  DateTime? @map("answered_at")
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, status])
+  @@index([broadcastId])
+  @@map("agent_questions")
 }
 
 // ---------------------------------------------------------------------------

@@ -34,6 +34,7 @@ export async function enrollmentRoutes(app: FastifyInstance, prisma: PrismaClien
       return reply.status(201).send({
         agent_id: result.agent.id,
         agent_token: result.agentToken,
+        runtime_token: result.runtimeToken,
         session_id: result.session.id,
         session_no: result.session.sessionNo,
         server_time: new Date().toISOString(),

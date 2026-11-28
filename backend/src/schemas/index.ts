@@ -63,7 +63,7 @@ export const ackBodySchema = {
 export const resultBodySchema = {
   type: 'object',
   properties: {
-    status: { type: 'string', enum: ['succeeded', 'failed'] },
+    status: { type: 'string', enum: ['succeeded', 'failed', 'rejected'] },
     output: { type: 'string' },
     exit_code: { type: 'integer' },
     error_reason: { type: 'string' },
@@ -297,6 +297,28 @@ export const schedulePatchBodySchema = {
     target: targetSchema,
     broadcast: { type: 'boolean' },
   },
+} as const;
+
+// --- Phase 8 schemas (CONTRACT-8: broadcast questions) ---
+
+export const questionBroadcastBodySchema = {
+  type: 'object',
+  properties: {
+    question: { type: 'string', minLength: 1, maxLength: 2000 },
+    agent_ids: { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 },
+    // CONTRACT-9: 'question' (default, read-only) or 'instruction' (executed).
+    kind: { type: 'string', enum: ['question', 'instruction'] },
+  },
+  required: ['question', 'agent_ids'],
+} as const;
+
+export const questionAnswerBodySchema = {
+  type: 'object',
+  properties: {
+    answer: { type: 'string', minLength: 1 },
+    answered_at: { type: 'string' },
+  },
+  required: ['answer'],
 } as const;
 
 export const selfRegisterBodySchema = {

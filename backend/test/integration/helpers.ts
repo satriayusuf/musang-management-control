@@ -49,12 +49,14 @@ const TABLES = [
   'automation_rules',
   'schedules',
   'heartbeats',
+  'agent_questions',
   'commands',
   'broadcast_batches',
   'command_templates',
   'events',
   'sessions',
   'workers',
+  'agent_runtime_states',
   'agents',
   'pairing_codes',
   'audit_logs',
@@ -93,6 +95,8 @@ export async function loginAsAdmin(app: FastifyInstance): Promise<string> {
 export interface PairedAgent {
   agentId: string;
   token: string;
+  /** CONTRACT-7: raw runtime token from the register response. */
+  runtimeToken: string;
   sessionId: string;
   workerId: string | null;
 }
@@ -134,8 +138,19 @@ export async function pairAgent(
     },
   });
   if (regRes.statusCode !== 201) throw new Error(`register failed: ${regRes.statusCode} ${regRes.body}`);
-  const reg = regRes.json() as { agent_id: string; agent_token: string; session_id: string };
-  return { agentId: reg.agent_id, token: reg.agent_token, sessionId: reg.session_id, workerId: null };
+  const reg = regRes.json() as {
+    agent_id: string;
+    agent_token: string;
+    runtime_token: string;
+    session_id: string;
+  };
+  return {
+    agentId: reg.agent_id,
+    token: reg.agent_token,
+    runtimeToken: reg.runtime_token,
+    sessionId: reg.session_id,
+    workerId: null,
+  };
 }
 
 export function heartbeatBody(sessionId: string, minerOverrides: Record<string, unknown> = {}, mem = 6.8) {

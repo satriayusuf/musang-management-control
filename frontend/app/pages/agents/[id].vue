@@ -9,6 +9,7 @@ import {
   PlayCircle,
   Ban,
   Trash2,
+  Server,
 } from 'lucide-vue-next'
 import { api, pick, type AgentSummary, type WorkerInfo, type SessionInfo, type EventInfo, type CommandInfo } from '~/lib/api'
 import { fmtDateTime, fmtRelative, fmtDuration, fmtHashrate, fmtGiB, fmtNumber } from '~/lib/format'
@@ -117,6 +118,36 @@ const runAgainBlocked = computed(() => {
   return ''
 })
 
+// ---------- CONTRACT-7: runtime + status gabungan ----------
+const runtime = computed(() => agent.value?.runtime ?? null)
+const combinedStatus = computed(() => worker.value?.combined_status ?? agent.value?.combined_status ?? null)
+const combinedReason = computed(() => worker.value?.combined_status_reason ?? agent.value?.combined_status_reason ?? null)
+
+/** Samakan dengan BRIDGE_SILENT_SEC server (300 detik). */
+const bridgeSilent = computed(() => {
+  const ls = agent.value?.last_seen_at
+  if (!ls) return true
+  const t = Date.parse(ls)
+  return Number.isNaN(t) || nowTick.value - t > 300_000
+})
+
+const useSnapshotHashrate = computed(() => {
+  const snap = runtime.value?.snapshot
+  return bridgeSilent.value && snap != null && typeof snap.hashrate_hs === 'number'
+})
+
+/** Status tampilan perintah (CONTRACT-7 §5): ditolak ≠ gagal; antrean untuk VM mati/pulih = Menunggu VM. */
+function isRejectedCommand(c: CommandInfo): boolean {
+  if (c.status !== 'FAILED') return false
+  const r = c.result as Record<string, unknown> | null
+  return r?.reported_status === 'rejected' || c.error_reason === 'LOW_MEMORY'
+}
+function commandChipStatus(c: CommandInfo): string {
+  if (isRejectedCommand(c)) return 'REJECTED'
+  if (c.status === 'QUEUED' && (combinedStatus.value === 'PULIH' || combinedStatus.value === 'MATI')) return 'WAITING_VM'
+  return c.status
+}
+
 // ---------- Aksi perintah ----------
 const showRunAgain = ref(false)
 type PendingAction = { type: string; title: string; message: string; confirmLabel: string }
@@ -174,11 +205,13 @@ async function doDelete() {
               title="Agent ini mendaftar sendiri lewat dokumen agent.md"
             >Daftar Mandiri</span>
             <StatusChip :status="agent.status" kind="agent" />
+            <StatusChip v-if="combinedStatus" :status="combinedStatus" kind="combined" />
             <StatusChip v-if="worker" :status="worker.status" kind="worker" />
             <HoldBadge v-if="worker" :active="holdActive" />
           </div>
           <p class="mt-1 font-mono text-xs text-ink-400">{{ agent.id }}</p>
-          <p v-if="worker?.status_reason" class="mt-1 text-sm text-ink-300">{{ worker.status_reason }}</p>
+          <p v-if="combinedReason" class="mt-1 text-sm text-ink-300">Status gabungan: {{ combinedReason }}</p>
+          <p v-if="worker?.status_reason" class="mt-1 text-sm text-ink-400">{{ worker.status_reason }}</p>
         </div>
         <div class="flex items-center gap-2">
           <button v-if="!agent.revoked_at && isAdmin" class="btn-ghost !text-red-300 hover:!bg-red-500/10" @click="revokeOpen = true">
@@ -288,14 +321,56 @@ async function doDelete() {
             </p>
           </div>
           <EmptyState v-else message="Agent ini belum memiliki worker. Aksi miner akan tersedia setelah bridge melaporkan worker." />
+          <div class="mt-4 border-t border-ink-700 pt-3">
+            <button class="btn-ghost w-full justify-start" disabled title="Menunggu API platform pengelola VM">
+              <Server class="h-4 w-4" /> Trigger VM (Ganti / Reboot VM)
+            </button>
+            <p class="mt-1.5 text-xs leading-relaxed text-ink-400">
+              Menunggu API platform pengelola VM. Mengganti atau me-reboot VM adalah kewenangan
+              platform, jadi kontrol ini sengaja nonaktif dan belum terhubung ke aksi apa pun.
+            </p>
+          </div>
         </section>
       </div>
+
+      <!-- Runtime Muse (CONTRACT-7) -->
+      <section class="panel mt-5 p-5">
+        <h2 class="text-sm font-semibold text-white">Runtime Muse</h2>
+        <p class="mt-1 text-xs leading-relaxed text-ink-400">
+          Runtime tinggal di VM dan selamat dari penggantian VM; laporannya adalah sumber status
+          paling dipercaya. Token runtime diterbitkan server saat registrasi dan disimpan bridge —
+          nilainya tidak pernah ditampilkan.
+        </p>
+        <dl v-if="runtime" class="mt-4 grid gap-x-8 gap-y-3 text-sm md:grid-cols-2">
+          <div class="flex justify-between gap-3"><dt class="text-ink-400">Status Token Runtime</dt><dd class="text-right">{{ runtime.token_issued ? `Diterbitkan (${fmtDateTime(runtime.token_issued_at)})` : 'Belum diterbitkan' }}</dd></div>
+          <div class="flex justify-between gap-3"><dt class="text-ink-400">Kontak Runtime Terakhir</dt><dd class="text-right">{{ runtime.last_contact_at ? `${fmtRelative(runtime.last_contact_at, nowTick)} (${fmtDateTime(runtime.last_contact_at)})` : 'Belum pernah' }}</dd></div>
+          <div class="flex justify-between gap-3"><dt class="text-ink-400">Transisi Terakhir</dt><dd class="text-right">{{ runtime.last_transition_type ? `${runtime.last_transition_type} · ${fmtDateTime(runtime.last_transition_at)}` : '—' }}</dd></div>
+          <div class="flex justify-between gap-3"><dt class="text-ink-400">Alasan Transisi</dt><dd class="max-w-64 text-right">{{ runtime.transition_reason || '—' }}</dd></div>
+          <div class="flex justify-between gap-3"><dt class="text-ink-400">Waktu Boot (Runtime)</dt><dd class="text-right">{{ fmtDateTime(runtime.boot_time) }}</dd></div>
+          <div class="flex justify-between gap-3"><dt class="text-ink-400">Snapshot Terakhir</dt><dd class="text-right">{{ runtime.snapshot?.at ? `${fmtRelative(runtime.snapshot.at, nowTick)} (${fmtDateTime(runtime.snapshot.at)})` : '—' }}</dd></div>
+          <div v-if="runtime.snapshot" class="flex justify-between gap-3"><dt class="text-ink-400">Hashrate Snapshot</dt><dd class="text-right">{{ fmtHashrate(runtime.snapshot.hashrate_hs) }}</dd></div>
+          <div v-if="runtime.snapshot" class="flex justify-between gap-3"><dt class="text-ink-400">Share Lokal Snapshot</dt><dd class="text-right">{{ fmtNumber(runtime.snapshot.shares_local) }}</dd></div>
+          <div v-if="runtime.snapshot" class="flex justify-between gap-3"><dt class="text-ink-400">Share Pool Diterima (Snapshot)</dt><dd class="text-right">{{ fmtNumber(runtime.snapshot.pool_accepted) }}</dd></div>
+          <div v-if="runtime.snapshot" class="flex justify-between gap-3"><dt class="text-ink-400">Memori Tersedia (Snapshot)</dt><dd class="text-right">{{ fmtGiB(runtime.snapshot.mem_available_gib) }}</dd></div>
+        </dl>
+        <p v-else class="mt-4 rounded-lg bg-ink-850 px-3 py-2 text-xs leading-relaxed text-ink-400">
+          Agent ini belum memiliki data runtime. Token runtime diterbitkan otomatis saat bridge
+          mendaftar ulang; laporan pertama tiba dari runtime di VM.
+        </p>
+      </section>
 
       <!-- Metrik Worker -->
       <section v-if="worker" class="panel mt-5 p-5">
         <h2 class="text-sm font-semibold text-white">Metrik Worker</h2>
         <div class="mt-4 grid grid-cols-2 gap-4 md:grid-cols-4">
-          <div><p class="text-xs text-ink-400">Hashrate VM</p><p class="mt-1 text-lg font-semibold text-white">{{ fmtHashrate(worker.hashrate_hs) }}</p></div>
+          <div>
+            <p class="text-xs text-ink-400">Hashrate VM</p>
+            <template v-if="useSnapshotHashrate">
+              <p class="mt-1 text-lg font-semibold text-white">{{ fmtHashrate(runtime!.snapshot!.hashrate_hs) }}</p>
+              <p class="text-xs text-sky-300">Snapshot runtime · {{ fmtRelative(runtime!.snapshot!.at, nowTick) }} (bridge diam)</p>
+            </template>
+            <p v-else class="mt-1 text-lg font-semibold text-white">{{ fmtHashrate(worker.hashrate_hs) }}</p>
+          </div>
           <div><p class="text-xs text-ink-400">Hashrate Pool</p><p class="mt-1 text-lg font-semibold text-white">{{ worker.pool && typeof worker.pool.hashrate === 'number' ? fmtHashrate(worker.pool.hashrate) : '—' }}</p></div>
           <div><p class="text-xs text-ink-400">Share Terakhir</p><p class="mt-1 text-lg font-semibold text-white">{{ fmtRelative(worker.last_share_at, nowTick) }}</p><p class="text-xs text-ink-400">{{ fmtDateTime(worker.last_share_at) }}</p></div>
           <div><p class="text-xs text-ink-400">Share Lokal (Sesi Ini)</p><p class="mt-1 text-lg font-semibold text-white">{{ fmtNumber(worker.shares_local) }}</p></div>
@@ -360,7 +435,7 @@ async function doDelete() {
               <tr v-for="c in commands" :key="c.id">
                 <td class="whitespace-nowrap text-xs">{{ fmtDateTime(c.created_at) }}</td>
                 <td>{{ commandTypeLabel(c.type) }} <span class="font-mono text-[11px] text-ink-400">{{ c.type }}</span></td>
-                <td><StatusChip :status="c.status" kind="command" /></td>
+                <td><StatusChip :status="commandChipStatus(c)" kind="command" /></td>
                 <td class="text-xs">{{ c.requested_by || '—' }}</td>
                 <td class="max-w-72 truncate text-xs" :title="c.error_reason || undefined">{{ c.error_reason || (c.status === 'SUCCEEDED' ? 'Selesai dan terverifikasi' : '—') }}</td>
               </tr>

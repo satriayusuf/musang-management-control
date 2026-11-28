@@ -51,6 +51,8 @@ export class Bridge {
   private readonly executor: CommandExecutor;
 
   private serverCfg: ServerConfig = { ...DEFAULT_SERVER_CONFIG };
+  /** Set by bridge.update after a new bundle is installed (CONTRACT-10). */
+  private selfRestartPending = false;
   private agentId: string | null = null;
   private token: string | null = null;
   private sessionId: string | null = null;
@@ -73,6 +75,10 @@ export class Bridge {
       capabilities: cfg.capabilities,
       bridgeDir: cfg.bridgeDir,
       getMinMemStartGib: () => this.serverCfg.min_mem_start_gib,
+      serverUrl: cfg.serverUrl,
+      onSelfRestart: () => {
+        this.selfRestartPending = true;
+      },
     });
   }
 
@@ -228,6 +234,9 @@ export class Bridge {
 
     const rawToken = resp.agent_token ?? resp.token;
     if (rawToken) this.store.saveToken(rawToken);
+    // CONTRACT-7: the ONLY bridge change in this phase — persist the
+    // runtime token for the Muse runtime on this VM. Never logged.
+    if (resp.runtime_token) this.store.saveRuntimeToken(resp.runtime_token, resp.agent_id);
     this.store.saveIdentity({
       agent_id: resp.agent_id,
       name: identity?.name || this.cfg.agentName,
@@ -267,6 +276,13 @@ export class Bridge {
         for (const cmd of commands) {
           if (this.shuttingDown) break;
           await this.handleCommand(cmd);
+          if (this.selfRestartPending) {
+            // bridge.update installed a new bundle and the result has
+            // been delivered: exit so systemd (Restart=always) revives
+            // the bridge on the new bundle (CONTRACT-10).
+            log("info", "bridge.update installed a new bundle — exiting for systemd restart");
+            process.exit(0);
+          }
         }
         failures = 0;
       } catch (err) {

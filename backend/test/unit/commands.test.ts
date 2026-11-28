@@ -17,18 +17,21 @@ describe('command lifecycle helpers', () => {
     expect(requiresVerification('miner.status')).toBe(false);
     expect(requiresVerification('miner.hold')).toBe(false);
     expect(requiresVerification('miner.unhold')).toBe(false);
+    // bridge.update verifies itself (hash compare on the bridge), so the
+    // heartbeat-snapshot verification does not apply (CONTRACT-10).
+    expect(requiresVerification('bridge.update')).toBe(false);
   });
 
   it('sensitive types require dashboard confirmation', () => {
-    for (const t of ['miner.run', 'miner.restart', 'miner.reinstall', 'miner.hold', 'miner.unhold']) {
+    for (const t of ['miner.run', 'miner.restart', 'miner.reinstall', 'miner.hold', 'miner.unhold', 'bridge.update']) {
       expect(SENSITIVE_COMMAND_TYPES.has(t)).toBe(true);
     }
     expect(SENSITIVE_COMMAND_TYPES.has('miner.status')).toBe(false);
   });
 
-  it('allowlist contains exactly the six miner types', () => {
+  it('allowlist contains exactly the six miner types plus bridge.update', () => {
     expect([...COMMAND_TYPES].sort()).toEqual(
-      ['miner.hold', 'miner.reinstall', 'miner.restart', 'miner.run', 'miner.status', 'miner.unhold'].sort(),
+      ['bridge.update', 'miner.hold', 'miner.reinstall', 'miner.restart', 'miner.run', 'miner.status', 'miner.unhold'].sort(),
     );
   });
 

@@ -75,3 +75,34 @@ export async function authenticateAgent(
   }
   return agent;
 }
+
+/**
+ * Authenticate the Muse RUNTIME (CONTRACT-7) for an agent: the Bearer
+ * token must match the agent's runtime token hash. Throws 404 for an
+ * unknown agent, 401 for a missing/wrong token or a revoked agent.
+ */
+export async function authenticateRuntime(
+  prisma: PrismaClient,
+  request: FastifyRequest,
+  agentId: string,
+): Promise<Agent> {
+  const agent = await prisma.agent.findUnique({ where: { id: agentId } });
+  if (!agent) throw httpError(404, 'AGENT_NOT_FOUND');
+  const token = bearerToken(request);
+  const state = await prisma.agentRuntimeState.findUnique({ where: { agentId } });
+  if (!token || agent.revokedAt || !verifyAgentToken(token, state?.runtimeTokenHash ?? null)) {
+    throw httpError(401, 'RUNTIME_UNAUTHORIZED');
+  }
+  return agent;
+}
+
+/** True when the request's Bearer token is the agent's AGENT (bridge) token. */
+export async function isAgentTokenRequest(
+  prisma: PrismaClient,
+  request: FastifyRequest,
+  agent: Agent,
+): Promise<boolean> {
+  const token = bearerToken(request);
+  if (!token || agent.revokedAt) return false;
+  return verifyAgentToken(token, agent.tokenHash);
+}

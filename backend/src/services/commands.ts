@@ -17,6 +17,7 @@ export const COMMAND_TYPES = [
   'miner.reinstall',
   'miner.hold',
   'miner.unhold',
+  'bridge.update',
 ] as const;
 
 export type CommandType = (typeof COMMAND_TYPES)[number];
@@ -28,6 +29,7 @@ export const SENSITIVE_COMMAND_TYPES = new Set<string>([
   'miner.reinstall',
   'miner.hold',
   'miner.unhold',
+  'bridge.update',
 ]);
 
 /** Types whose success must be verified by a later heartbeat snapshot. */
@@ -199,7 +201,7 @@ export async function ackCommand(
 }
 
 export interface CommandResultBody {
-  status: 'succeeded' | 'failed';
+  status: 'succeeded' | 'failed' | 'rejected';
   output?: string;
   exit_code?: number;
   error_reason?: string;
@@ -230,13 +232,14 @@ export async function reportCommandResult(
     reported_status: body.status,
   } as never;
 
-  if (body.status === 'failed') {
+  if (body.status === 'failed' || body.status === 'rejected') {
+    const rejected = body.status === 'rejected';
     const updated = await prisma.command.update({
       where: { id: commandId },
       data: {
         status: 'FAILED',
         result: resultJson,
-        errorReason: body.error_reason ?? 'EXECUTION_FAILED',
+        errorReason: body.error_reason ?? (rejected ? 'REJECTED' : 'EXECUTION_FAILED'),
         finishedAt: new Date(),
         verifyDeadline: null,
       },
@@ -244,9 +247,16 @@ export async function reportCommandResult(
     await createEvent(prisma, {
       agentId: agent.id,
       workerId: command.workerId,
-      type: 'COMMAND_FAILED',
-      description: `Perintah ${command.type} gagal: ${updated.errorReason}`,
-      metadata: { command_id: command.id, outcome: 'failure', error_reason: updated.errorReason },
+      type: rejected ? 'COMMAND_REJECTED' : 'COMMAND_FAILED',
+      description: rejected
+        ? `Perintah ${command.type} ditolak: ${updated.errorReason}`
+        : `Perintah ${command.type} gagal: ${updated.errorReason}`,
+      metadata: {
+        command_id: command.id,
+        outcome: 'failure',
+        error_reason: updated.errorReason,
+        ...(rejected ? { rejected: true } : {}),
+      },
     });
     if (STATE_CHANGING_TYPES.has(command.type)) {
       await createEvent(prisma, {
@@ -303,6 +313,54 @@ export async function reportCommandResult(
   }
   broadcast('command.succeeded', updated);
   return { command: updated, verification: 'none' };
+}
+
+/**
+ * CONTRACT-7 §5: the runtime's view of the queue. Returns QUEUED,
+ * unexpired commands WITHOUT claiming them — the row stays QUEUED (the
+ * dashboard keeps showing "Menunggu VM") until the runtime posts a
+ * result. Exactly-once on the runtime side is the runtime's own
+ * executed-id tracking; the server additionally rejects a second result
+ * for a terminal command with 409.
+ */
+export async function listQueuedForRuntime(prisma: PrismaClient, agentId: string): Promise<Command[]> {
+  return prisma.command.findMany({
+    where: { agentId, status: 'QUEUED', expiresAt: { gte: new Date() } },
+    orderBy: { createdAt: 'asc' },
+    take: 50,
+  });
+}
+
+/**
+ * CONTRACT-7 §5: record a runtime-reported result. Unlike the bridge
+ * path, the command may still be QUEUED (the runtime never claimed it):
+ * it is first moved to RUNNING, then the shared terminal handling runs.
+ * A result for a terminal command is a 409 — never applied twice.
+ */
+export async function reportRuntimeCommandResult(
+  prisma: PrismaClient,
+  agent: Agent,
+  commandId: string,
+  body: CommandResultBody,
+): Promise<{ command: Command; verification: 'none' | 'pending' | 'failed' }> {
+  const command = await prisma.command.findUnique({ where: { id: commandId } });
+  if (!command || command.agentId !== agent.id) {
+    throw Object.assign(new Error('COMMAND_NOT_FOUND'), { statusCode: 404 });
+  }
+  if (command.status === 'QUEUED') {
+    await prisma.command.update({
+      where: { id: commandId },
+      data: { status: 'RUNNING', startedAt: new Date() },
+    });
+    await createEvent(prisma, {
+      agentId: agent.id,
+      workerId: command.workerId,
+      type: 'COMMAND_STARTED',
+      description: `Perintah ${command.type} mulai dijalankan oleh runtime`,
+      metadata: { command_id: command.id, source: 'runtime' },
+    });
+  }
+  return reportCommandResult(prisma, agent, commandId, body);
 }
 
 /**

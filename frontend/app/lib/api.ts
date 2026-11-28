@@ -161,6 +161,27 @@ export function pick<T = unknown>(obj: unknown, ...keys: string[]): T | undefine
 
 // ---------- Tipe data (sesuai kontrak) ----------
 
+/** Blok runtime Muse (CONTRACT-7 §6). Nilai token tidak pernah tampil — hanya status diterbitkan + laporan terakhir. */
+export interface RuntimeStateInfo {
+  token_issued: boolean
+  token_issued_at?: string | null
+  last_contact_at?: string | null
+  last_event_type?: string | null
+  last_event_at?: string | null
+  last_transition_type?: string | null
+  last_transition_at?: string | null
+  transition_reason?: string | null
+  boot_time?: string | null
+  snapshot?: {
+    at?: string | null
+    hashrate_hs?: number | null
+    shares_local?: number | null
+    pool_accepted?: number | null
+    pool_last_share_at?: string | null
+    mem_available_gib?: number | null
+  } | null
+}
+
 export interface AgentSummary {
   id: string
   name: string
@@ -178,6 +199,10 @@ export interface AgentSummary {
   revoked_at?: string | null
   current_session?: SessionInfo | null
   worker?: WorkerSummary | null
+  /** CONTRACT-7: status gabungan (JALAN/PULIH/MATI/TAK_TERJANGKAU) + blok runtime. */
+  combined_status?: string | null
+  combined_status_reason?: string | null
+  runtime?: RuntimeStateInfo | null
   [key: string]: unknown
 }
 
@@ -217,6 +242,9 @@ export interface WorkerSummary {
   status_reason?: string | null
   /** CONTRACT-5 B6: snapshot pool per worker; null = tidak ada blok pool. */
   pool?: WorkerPoolInfo | null
+  /** CONTRACT-7: status gabungan server (runtime > bridge > pool). */
+  combined_status?: string | null
+  combined_status_reason?: string | null
   [key: string]: unknown
 }
 
@@ -409,6 +437,50 @@ export interface AlertNotificationInfo {
 }
 
 // ---------- Tipe Fase 3 ----------
+
+/** Fase 8 (CONTRACT-8): pertanyaan broadcast ke agent. */
+export interface QuestionBroadcastSummary {
+  total: number
+  answered: number
+  queued: number
+  expired: number
+}
+
+/** Fase 9 (CONTRACT-9): pertanyaan hanya-baca atau instruksi yang dieksekusi. */
+export type BroadcastKind = 'question' | 'instruction'
+
+export interface QuestionBroadcastListItem {
+  broadcast_id: string
+  kind: BroadcastKind
+  question: string
+  asked_by: string
+  asked_at: string
+  summary: QuestionBroadcastSummary
+}
+
+export interface QuestionItem {
+  id: string
+  agent_id: string
+  agent_name?: string
+  broadcast_id: string
+  kind: BroadcastKind
+  question: string
+  asked_by: string
+  asked_at: string
+  status: string
+  answer: string | null
+  answered_at: string | null
+}
+
+export interface QuestionBroadcastDetail {
+  broadcast_id: string
+  kind: BroadcastKind
+  question: string
+  asked_by: string
+  asked_at: string
+  summary: QuestionBroadcastSummary
+  items: QuestionItem[]
+}
 
 export type UserRole = 'ADMIN' | 'OPERATOR' | 'VIEWER'
 
@@ -757,6 +829,23 @@ export const api = {
       created: Array.isArray(res.created) ? (res.created as BroadcastCreatedItem[]) : [],
       skipped: Array.isArray(res.skipped) ? (res.skipped as BroadcastSkippedItem[]) : [],
     }
+  },
+  async createQuestionBroadcast(body: {
+    question: string
+    agent_ids: string[]
+    kind?: BroadcastKind
+  }): Promise<{ broadcast_id: string; question_count: number; kind: BroadcastKind }> {
+    return apiFetch('/broadcasts', { method: 'POST', body })
+  },
+  async listQuestionBroadcasts(params: { page?: number; page_size?: number } = {}): Promise<Page<QuestionBroadcastListItem>> {
+    const res = await apiFetch('/broadcasts', { query: { ...params } })
+    return normalizePage<QuestionBroadcastListItem>(res, params.page ?? 1, params.page_size ?? 20)
+  },
+  async getQuestionBroadcast(id: string): Promise<QuestionBroadcastDetail> {
+    return apiFetch<QuestionBroadcastDetail>(`/broadcasts/${id}`)
+  },
+  async deleteQuestionBroadcast(id: string): Promise<{ broadcast_id: string; deleted: number }> {
+    return apiFetch(`/broadcasts/${id}`, { method: 'DELETE' })
   },
   async listBatches(params: { page?: number; page_size?: number } = {}): Promise<Page<BatchInfo>> {
     const res = await apiFetch('/commands/batches', { query: params })

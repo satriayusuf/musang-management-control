@@ -14,6 +14,7 @@ import {
   UserRound,
   Workflow,
   Users,
+  MessageCircleQuestion,
 } from 'lucide-vue-next'
 import { api } from '~/lib/api'
 import { userRoleLabel } from '~/lib/labels'
@@ -31,6 +32,7 @@ const navItems = computed(() => {
     { to: '/agents', label: 'Agent', icon: Bot },
     { to: '/miners', label: 'Miner', icon: Pickaxe },
     { to: '/commands', label: 'Pusat Perintah', icon: TerminalSquare },
+    { to: '/questions', label: 'Tanya Agent', icon: MessageCircleQuestion },
     { to: '/events', label: 'Event & Pemulihan', icon: History },
     { to: '/analytics', label: 'Analitik', icon: BarChart3 },
   ]

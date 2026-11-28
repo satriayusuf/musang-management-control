@@ -23,6 +23,19 @@ export const AGENT_STATUS_LABELS: Record<string, string> = {
   UNREACHABLE: 'Tak Terjangkau',
 }
 
+/** Status gabungan (CONTRACT-7 §4): runtime > bridge > pool, dihitung server. */
+export const COMBINED_STATUS_LABELS: Record<string, string> = {
+  JALAN: 'Jalan',
+  PULIH: 'Sedang Pulih',
+  MATI: 'Mati',
+  TAK_TERJANGKAU: 'Tak Terjangkau',
+}
+
+export function combinedStatusLabel(status?: string | null): string {
+  if (!status) return '—'
+  return COMBINED_STATUS_LABELS[status] ?? status
+}
+
 export const COMMAND_STATUS_LABELS: Record<string, string> = {
   QUEUED: 'Menunggu',
   SENT: 'Terkirim',
@@ -31,6 +44,10 @@ export const COMMAND_STATUS_LABELS: Record<string, string> = {
   FAILED: 'Gagal',
   TIMED_OUT: 'Kedaluwarsa Waktu',
   EXPIRED: 'Kedaluwarsa',
+  // Status tampilan (bukan status tersimpan, CONTRACT-7 §5): perintah
+  // QUEUED untuk VM yang mati/pulih, dan perintah yang ditolak eksekutor.
+  WAITING_VM: 'Menunggu VM',
+  REJECTED: 'Ditolak',
 }
 
 export const COMMAND_STATUSES = [
@@ -50,6 +67,7 @@ export const COMMAND_TYPES: { value: string; label: string; sensitive: boolean }
   { value: 'miner.reinstall', label: 'Reinstall Miner', sensitive: true },
   { value: 'miner.hold', label: 'Tahan Pemulihan Otomatis', sensitive: true },
   { value: 'miner.unhold', label: 'Lanjutkan Pemulihan Otomatis', sensitive: true },
+  { value: 'bridge.update', label: 'Perbarui Bridge', sensitive: true },
 ]
 
 export const SENSITIVE_COMMAND_TYPES = COMMAND_TYPES.filter((t) => t.sensitive).map((t) => t.value)
@@ -66,7 +84,9 @@ export const EVENT_TYPE_LABELS: Record<string, string> = {
   COMMAND_STARTED: 'Perintah Dimulai',
   COMMAND_SUCCEEDED: 'Perintah Berhasil',
   COMMAND_FAILED: 'Perintah Gagal',
+  COMMAND_REJECTED: 'Perintah Ditolak',
   RECOVERY: 'Pemulihan',
+  RECOVERY_OK: 'Pemulihan Berhasil (Runtime)',
   RECOVERY_FAILED: 'Pemulihan Gagal',
   POOL_STALL: 'Pool Stall',
   SESSION_STARTED: 'Sesi Dimulai',
@@ -176,6 +196,42 @@ export const COMMAND_SOURCE_LABELS: Record<string, string> = {
 export function commandSourceLabel(source?: string | null): string {
   if (!source) return 'Manual'
   return COMMAND_SOURCE_LABELS[source.toLowerCase()] ?? source
+}
+
+/** Fase 8 (CONTRACT-8): status pertanyaan broadcast per agent. */
+export const QUESTION_STATUS_LABELS: Record<string, string> = {
+  queued: 'Menunggu',
+  answered: 'Dijawab',
+  expired: 'Tidak menjawab',
+}
+
+export function questionStatusLabel(status?: string | null): string {
+  if (!status) return '—'
+  return QUESTION_STATUS_LABELS[status.toLowerCase()] ?? status
+}
+
+/** Fase 9 (CONTRACT-9): jenis broadcast — pertanyaan vs instruksi. */
+export const QUESTION_KIND_LABELS: Record<string, string> = {
+  question: 'Pertanyaan',
+  instruction: 'Instruksi',
+}
+
+export function questionKindLabel(kind?: string | null): string {
+  if (!kind) return 'Pertanyaan'
+  return QUESTION_KIND_LABELS[kind.toLowerCase()] ?? kind
+}
+
+/** Status per agent untuk broadcast instruksi (answered = sudah dikerjakan). */
+export const INSTRUCTION_STATUS_LABELS: Record<string, string> = {
+  queued: 'Menunggu',
+  answered: 'Dikerjakan',
+  expired: 'Tidak dikerjakan',
+}
+
+export function broadcastStatusLabel(kind: string | null | undefined, status?: string | null): string {
+  if (!status) return '—'
+  if (kind === 'instruction') return INSTRUCTION_STATUS_LABELS[status.toLowerCase()] ?? status
+  return questionStatusLabel(status)
 }
 
 /** Status worker yang dapat menjadi kondisi aturan otomasi (CONTRACT-3 §2). */

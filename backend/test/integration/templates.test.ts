@@ -39,7 +39,7 @@ describe('command templates (integration, Phase 2)', () => {
     workerId = worker!.id;
   });
 
-  it('seeds the six default templates at boot', async () => {
+  it('seeds the default templates at boot', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/command-templates', headers: { authorization: `Bearer ${jwt}` } });
     expect(res.statusCode).toBe(200);
     const names = res.json().items.map((t: { name: string }) => t.name);
@@ -51,11 +51,15 @@ describe('command templates (integration, Phase 2)', () => {
         'Tahan Auto-Recovery',
         'Lepas Tahan Auto-Recovery',
         'Reinstall Miner',
+        'Perbarui Bridge',
       ]),
     );
     const run = res.json().items.find((t: { name: string }) => t.name === 'Jalankan Miner');
     expect(run.type).toBe('miner.run');
     expect(run.sensitive).toBe(true);
+    const upd = res.json().items.find((t: { name: string }) => t.name === 'Perbarui Bridge');
+    expect(upd.type).toBe('bridge.update');
+    expect(upd.sensitive).toBe(true);
   });
 
   it('CRUD: create -> duplicate name 409 -> patch -> delete 204', async () => {
