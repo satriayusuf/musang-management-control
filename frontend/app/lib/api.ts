@@ -456,6 +456,8 @@ export interface QuestionBroadcastListItem {
   asked_by: string
   asked_at: string
   summary: QuestionBroadcastSummary
+  /** Fase 11 (CONTRACT-11): broadcast ini lanjutan dari thread sebelumnya. */
+  is_followup?: boolean
 }
 
 export interface QuestionItem {
@@ -470,6 +472,11 @@ export interface QuestionItem {
   status: string
   answer: string | null
   answered_at: string | null
+  /** Fase 11 (CONTRACT-11): tautan thread follow-up. */
+  parent_question_id?: string | null
+  root_question_id?: string | null
+  parent_question?: string | null
+  followups?: QuestionItem[]
 }
 
 export interface QuestionBroadcastDetail {
@@ -846,6 +853,20 @@ export const api = {
   },
   async deleteQuestionBroadcast(id: string): Promise<{ broadcast_id: string; deleted: number }> {
     return apiFetch(`/broadcasts/${id}`, { method: 'DELETE' })
+  },
+  /** Fase 11 (CONTRACT-11): balas pesan satu agent (thread per question_id). */
+  async createQuestionFollowup(
+    questionId: string,
+    body: { question: string; kind?: BroadcastKind },
+  ): Promise<{ broadcast_id: string; question_id: string; parent_question_id: string; kind: BroadcastKind }> {
+    return apiFetch(`/questions/${questionId}/followup`, { method: 'POST', body })
+  },
+  /** Fase 11 (CONTRACT-11): kirim follow-up sebagai broadcast baru ke agent-agent broadcast asal. */
+  async createBroadcastFollowup(
+    broadcastId: string,
+    body: { question: string; kind?: BroadcastKind; agent_ids?: string[] },
+  ): Promise<{ broadcast_id: string; question_count: number; kind: BroadcastKind }> {
+    return apiFetch(`/broadcasts/${broadcastId}/followup`, { method: 'POST', body })
   },
   async listBatches(params: { page?: number; page_size?: number } = {}): Promise<Page<BatchInfo>> {
     const res = await apiFetch('/commands/batches', { query: params })

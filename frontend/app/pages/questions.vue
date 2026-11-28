@@ -6,6 +6,7 @@ import {
   type BroadcastKind,
   type QuestionBroadcastDetail,
   type QuestionBroadcastListItem,
+  type QuestionItem,
 } from '~/lib/api'
 import { fmtDateTime } from '~/lib/format'
 import { broadcastStatusLabel, questionKindLabel } from '~/lib/labels'
@@ -51,6 +52,9 @@ async function loadBroadcasts() {
 
 async function openBroadcast(id: string) {
   selectedId.value = id
+  statusFilter.value = 'all'
+  replyTo.value = ''
+  updateOpen.value = false
   try {
     detail.value = await api.getQuestionBroadcast(id)
   } catch {
@@ -123,6 +127,105 @@ async function doDelete() {
   }
   deleteTarget.value = null
   await loadBroadcasts()
+}
+
+// --- Fase 11 (CONTRACT-11): filter status, balasan per agent, follow-up broadcast ---
+
+type StatusFilter = 'all' | 'answered' | 'queued' | 'expired'
+const statusFilter = ref<StatusFilter>('all')
+
+const filterChips = computed<Array<{ key: StatusFilter; label: string; count: number }>>(() => {
+  if (!detail.value) return []
+  const k = detail.value.kind
+  const s = detail.value.summary
+  return [
+    { key: 'all', label: 'Semua', count: s.total },
+    { key: 'answered', label: broadcastStatusLabel(k, 'answered'), count: s.answered },
+    { key: 'queued', label: broadcastStatusLabel(k, 'queued'), count: s.queued },
+    { key: 'expired', label: broadcastStatusLabel(k, 'expired'), count: s.expired },
+  ]
+})
+
+const filteredItems = computed<QuestionItem[]>(() => {
+  if (!detail.value) return []
+  if (statusFilter.value === 'all') return detail.value.items
+  return detail.value.items.filter((i) => i.status === statusFilter.value)
+})
+
+const parentQuestionText = computed(
+  () => detail.value?.items.find((i) => i.parent_question)?.parent_question ?? null,
+)
+
+const replyTo = ref('')
+const replyBusy = ref(false)
+const replyError = ref('')
+const updateOpen = ref(false)
+const updateBusy = ref(false)
+const updateError = ref('')
+const pendingFollowup = ref<{ text: string; targets: string; run: () => Promise<void> } | null>(null)
+
+function openReply(item: QuestionItem) {
+  replyTo.value = item.id
+  replyError.value = ''
+}
+
+function onReplySend(text: string, kind: BroadcastKind) {
+  const targetId = replyTo.value
+  if (!targetId) return
+  const run = async () => {
+    await doReply(targetId, text, kind)
+  }
+  // Instruksi follow-up tetap wajib konfirmasi (pola CONTRACT-9).
+  if (kind === 'instruction') {
+    pendingFollowup.value = { text, targets: '1 agent', run }
+    return
+  }
+  void run()
+}
+
+async function doReply(targetId: string, text: string, kind: BroadcastKind) {
+  pendingFollowup.value = null
+  replyBusy.value = true
+  replyError.value = ''
+  try {
+    await api.createQuestionFollowup(targetId, { question: text, kind })
+    replyTo.value = ''
+    await refresh()
+  } catch (e) {
+    replyError.value = e instanceof Error ? e.message : 'Gagal mengirim balasan.'
+  } finally {
+    replyBusy.value = false
+  }
+}
+
+function onUpdateSend(text: string, kind: BroadcastKind) {
+  if (!detail.value) return
+  const sourceId = detail.value.broadcast_id
+  const count = detail.value.summary.total
+  const run = async () => {
+    await doUpdate(sourceId, text, kind)
+  }
+  if (kind === 'instruction') {
+    pendingFollowup.value = { text, targets: `${count} agent`, run }
+    return
+  }
+  void run()
+}
+
+async function doUpdate(sourceId: string, text: string, kind: BroadcastKind) {
+  pendingFollowup.value = null
+  updateBusy.value = true
+  updateError.value = ''
+  try {
+    const res = await api.createBroadcastFollowup(sourceId, { question: text, kind })
+    updateOpen.value = false
+    await loadBroadcasts()
+    await openBroadcast(res.broadcast_id)
+  } catch (e) {
+    updateError.value = e instanceof Error ? e.message : 'Gagal mengirim update.'
+  } finally {
+    updateBusy.value = false
+  }
 }
 
 function statusChipClass(status: string): string {
@@ -258,6 +361,12 @@ useLiveRefresh(refresh)
                 >
                   {{ questionKindLabel(b.kind) }}
                 </span>
+                <span
+                  v-if="b.is_followup"
+                  class="inline-flex shrink-0 rounded-full bg-indigo-500/10 px-2 py-0.5 text-[10px] font-semibold text-indigo-300 ring-1 ring-inset ring-indigo-500/30"
+                >
+                  Update
+                </span>
                 <span class="block min-w-0 truncate text-sm text-ink-100">{{ b.question }}</span>
               </span>
               <span class="mt-1 block text-xs text-ink-500">
@@ -281,23 +390,32 @@ useLiveRefresh(refresh)
       <section class="rounded-xl border border-ink-700 bg-ink-900 p-5">
         <div class="flex items-center justify-between gap-2">
           <h2 class="text-sm font-semibold text-white">Jawaban</h2>
-          <button
-            v-if="detail && auth.canOperate"
-            class="inline-flex items-center gap-1.5 rounded-lg border border-ink-700 px-2.5 py-1.5 text-xs font-medium text-ink-300 transition-colors hover:border-red-500/50 hover:text-red-400"
-            @click="
-              askDelete({
-                broadcast_id: detail.broadcast_id,
-                kind: detail.kind,
-                question: detail.question,
-                asked_by: detail.asked_by,
-                asked_at: detail.asked_at,
-                summary: detail.summary,
-              })
-            "
-          >
-            <Trash2 class="h-3.5 w-3.5" />
-            Hapus
-          </button>
+          <div v-if="detail" class="flex items-center gap-1.5">
+            <button
+              v-if="auth.canOperate"
+              class="inline-flex items-center gap-1.5 rounded-lg border border-ink-700 px-2.5 py-1.5 text-xs font-medium text-ink-300 transition-colors hover:border-indigo-500/50 hover:text-indigo-300"
+              @click="updateOpen = !updateOpen"
+            >
+              Kirim Update ke Semua
+            </button>
+            <button
+              v-if="auth.canOperate"
+              class="inline-flex items-center gap-1.5 rounded-lg border border-ink-700 px-2.5 py-1.5 text-xs font-medium text-ink-300 transition-colors hover:border-red-500/50 hover:text-red-400"
+              @click="
+                askDelete({
+                  broadcast_id: detail.broadcast_id,
+                  kind: detail.kind,
+                  question: detail.question,
+                  asked_by: detail.asked_by,
+                  asked_at: detail.asked_at,
+                  summary: detail.summary,
+                })
+              "
+            >
+              <Trash2 class="h-3.5 w-3.5" />
+              Hapus
+            </button>
+          </div>
         </div>
         <p v-if="!detail" class="mt-3 text-sm text-ink-400">Pilih pertanyaan di kiri untuk melihat jawaban tiap agent.</p>
         <template v-else>
@@ -321,9 +439,45 @@ useLiveRefresh(refresh)
             {{ detail.summary.queued }} menunggu · {{ detail.summary.expired }}
             {{ detail.kind === 'instruction' ? 'tidak dikerjakan' : 'tidak menjawab' }}
           </p>
-          <ul class="mt-4 space-y-3">
+          <p v-if="parentQuestionText" class="mt-2 text-xs text-ink-400">
+            Lanjutan dari: <span class="text-ink-200">“{{ parentQuestionText }}”</span>
+          </p>
+
+          <ReplyComposer
+            v-if="updateOpen && auth.canOperate"
+            :key="`update-${detail.broadcast_id}`"
+            :initial-kind="detail.kind"
+            :busy="updateBusy"
+            :error="updateError"
+            submit-label="Kirim Update"
+            placeholder="Tulis pesan lanjutan untuk semua agent di broadcast ini…"
+            @send="onUpdateSend"
+            @cancel="updateOpen = false"
+          />
+
+          <!-- Filter status jawaban -->
+          <div class="mt-4 flex flex-wrap gap-1.5">
+            <button
+              v-for="chip in filterChips"
+              :key="chip.key"
+              class="rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition-colors"
+              :class="
+                statusFilter === chip.key
+                  ? 'bg-indigo-600 text-white ring-indigo-500'
+                  : 'bg-ink-950 text-ink-300 ring-ink-700 hover:bg-ink-800'
+              "
+              @click="statusFilter = chip.key"
+            >
+              {{ chip.label }} ({{ chip.count }})
+            </button>
+          </div>
+
+          <p v-if="filteredItems.length === 0" class="mt-3 text-sm text-ink-400">
+            Tidak ada agent dengan status ini.
+          </p>
+          <ul v-else class="mt-3 space-y-3">
             <li
-              v-for="item in detail.items"
+              v-for="item in filteredItems"
               :key="item.id"
               class="rounded-lg border border-ink-700 bg-ink-950 px-3 py-2.5"
             >
@@ -344,6 +498,80 @@ useLiveRefresh(refresh)
               <p v-if="item.answered_at" class="mt-1 text-xs text-ink-500">
                 {{ detail.kind === 'instruction' ? 'Dilaporkan' : 'Dijawab' }} {{ fmtDateTime(item.answered_at) }}
               </p>
+
+              <!-- Update lanjutan di thread agent ini -->
+              <div
+                v-if="item.followups && item.followups.length"
+                class="mt-2.5 space-y-2 border-l-2 border-ink-700 pl-3"
+              >
+                <div
+                  v-for="f in item.followups"
+                  :key="f.id"
+                  class="rounded-md bg-ink-900/70 px-2.5 py-2"
+                >
+                  <div class="flex items-center gap-2">
+                    <span
+                      class="inline-flex shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset"
+                      :class="
+                        f.kind === 'instruction'
+                          ? 'bg-red-500/10 text-red-300 ring-red-500/30'
+                          : 'bg-zinc-500/10 text-zinc-300 ring-zinc-500/30'
+                      "
+                    >
+                      {{ questionKindLabel(f.kind) }}
+                    </span>
+                    <span class="min-w-0 flex-1 truncate text-xs font-medium text-ink-200">{{ f.question }}</span>
+                    <span
+                      class="inline-flex shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset"
+                      :class="statusChipClass(f.status)"
+                    >
+                      {{ broadcastStatusLabel(f.kind, f.status) }}
+                    </span>
+                  </div>
+                  <p v-if="f.status === 'answered'" class="mt-1 whitespace-pre-wrap text-sm text-ink-200">
+                    {{ f.answer }}
+                  </p>
+                  <p class="mt-0.5 text-[11px] text-ink-500">
+                    {{ fmtDateTime(f.asked_at) }}
+                    <template v-if="f.answered_at">
+                      · {{ f.kind === 'instruction' ? 'Dilaporkan' : 'Dijawab' }} {{ fmtDateTime(f.answered_at) }}
+                    </template>
+                  </p>
+                  <button
+                    v-if="auth.canOperate && replyTo !== f.id"
+                    class="mt-1 text-xs font-medium text-indigo-300 hover:text-indigo-200"
+                    @click="openReply(f)"
+                  >
+                    Balas
+                  </button>
+                  <ReplyComposer
+                    v-if="replyTo === f.id"
+                    :key="`reply-${f.id}`"
+                    :initial-kind="f.kind"
+                    :busy="replyBusy"
+                    :error="replyError"
+                    @send="onReplySend"
+                    @cancel="replyTo = ''"
+                  />
+                </div>
+              </div>
+
+              <button
+                v-if="auth.canOperate && replyTo !== item.id"
+                class="mt-2 text-xs font-medium text-indigo-300 hover:text-indigo-200"
+                @click="openReply(item)"
+              >
+                Balas
+              </button>
+              <ReplyComposer
+                v-if="replyTo === item.id"
+                :key="`reply-${item.id}`"
+                :initial-kind="item.kind"
+                :busy="replyBusy"
+                :error="replyError"
+                @send="onReplySend"
+                @cancel="replyTo = ''"
+              />
             </li>
           </ul>
         </template>
@@ -368,6 +596,16 @@ useLiveRefresh(refresh)
       danger
       :on-confirm="doSend"
       @close="confirmInstruction = false"
+    />
+
+    <ConfirmDialog
+      v-if="pendingFollowup"
+      title="Kirim Instruksi Lanjutan?"
+      :message="`Instruksi “${pendingFollowup.text}” akan DIEKSEKUSI oleh ${pendingFollowup.targets} di VM-nya. Lanjutkan?`"
+      confirm-label="Kirim & Eksekusi"
+      danger
+      :on-confirm="pendingFollowup.run"
+      @close="pendingFollowup = null"
     />
   </div>
 </template>

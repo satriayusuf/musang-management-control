@@ -137,8 +137,11 @@ broadcast adalah runtime.
   token runtime dari file yang sama seperti Langkah 5. Untuk tiap pesan
   baru (question_id belum ada di state reporter), reporter menulis file
   `~/workspace/bnt-miner/inbox/<questionId>.json` berisi
-  `{question_id, broadcast_id, kind, question, asked_at, asked_by}`
-  lalu mencatat question_id itu di state-nya. Pesan yang asked_at-nya
+  `{question_id, broadcast_id, kind, question, asked_at, asked_by, parent}`
+  lalu mencatat question_id itu di state-nya. Field `parent` bernilai
+  null untuk pesan pertama di sebuah thread; untuk pesan LANJUTAN
+  (follow-up) ia berisi `{question_id, kind, question, answer,
+  answered_at}` dari pesan sebelumnya di thread yang sama. Pesan yang asked_at-nya
   lebih dari 30 menit lalu dilewati (kedaluwarsa). Token tidak ada atau
   jaringan gagal → diam, coba lagi putaran berikut. Selalu exit 0.
 - File baru di folder inbox membangunkan agant (hook file-watcher)
@@ -154,6 +157,15 @@ broadcast adalah runtime.
   instruksi di VM ini dengan tool yang agant punya. Susun laporan
   SINGKAT: apa yang dilakukan, hasil/verifikasinya, atau alasan
   gagalnya — dalam bahasa instruksi.
+- Kalau field `parent` TIDAK null, pesan ini adalah LANJUTAN dari
+  pertukaran sebelumnya: baca dulu pertanyaan/instruksi induknya DAN
+  jawaban/laporanmu sebelumnya, lalu tanggapi sebagai UPDATE —
+  untuk `kind = "question"` selidiki keadaan TERKINI dan laporkan
+  yang berubah/nilai terbarunya (tetap hanya-baca); untuk
+  `kind = "instruction"` ini perintah baru yang melanjutkan thread:
+  eksekusi satu kali (dedup tetap per question_id pesan INI) dan
+  laporkan hasilnya, sebutkan yang berubah dari keadaan sebelumnya
+  bila relevan.
 - Kirim jawaban/laporan: tulis teksnya ke file, lalu panggil
   `runtime-reporter.sh answer <questionId> <fileJawaban>` — reporter
   POST ke `{{SERVER_URL}}/api/agents/{id}/questions/{questionId}/answer`

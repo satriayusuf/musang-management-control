@@ -48,6 +48,21 @@ export async function expireStaleQuestions(
 
 export type BroadcastKind = 'question' | 'instruction';
 
+/** Shared CONTRACT-8 validation for any broadcast/follow-up text. */
+function normalizeQuestionText(raw: string): string {
+  const question = raw.trim();
+  if (question.length === 0) throw httpError(400, 'QUESTION_EMPTY');
+  if (question.length > QUESTION_MAX_LENGTH) throw httpError(400, 'QUESTION_TOO_LONG');
+  return question;
+}
+
+/** Route schemas already restrict kind to the enum; anything that is
+ *  not 'instruction' behaves as 'question' (CONTRACT-9 default). */
+function normalizeKind(raw: string | undefined, fallback: BroadcastKind): BroadcastKind {
+  if (raw === undefined) return fallback;
+  return raw === 'instruction' ? 'instruction' : 'question';
+}
+
 export interface CreateBroadcastInput {
   question: string;
   agentIds: string[];
@@ -65,9 +80,7 @@ export async function createQuestionBroadcast(
   prisma: PrismaClient,
   input: CreateBroadcastInput,
 ): Promise<{ broadcastId: string; questionCount: number; kind: BroadcastKind }> {
-  const question = input.question.trim();
-  if (question.length === 0) throw httpError(400, 'QUESTION_EMPTY');
-  if (question.length > QUESTION_MAX_LENGTH) throw httpError(400, 'QUESTION_TOO_LONG');
+  const question = normalizeQuestionText(input.question);
   const kind: BroadcastKind = input.kind === 'instruction' ? 'instruction' : 'question';
 
   const uniqueIds = [...new Set(input.agentIds)];
@@ -99,6 +112,128 @@ export async function createQuestionBroadcast(
   });
   broadcast('broadcast.question_created', { broadcast_id: broadcastId, question_count: agents.length, kind });
   return { broadcastId, questionCount: agents.length, kind };
+}
+
+export interface CreateFollowupInput {
+  question: string;
+  askedBy: string;
+  /** Optional; defaults to the parent/original kind (CONTRACT-11). */
+  kind?: string;
+}
+
+/**
+ * CONTRACT-11: reply to ONE agent's message. Creates a single new row
+ * for the SAME agent under a NEW broadcast id, linked to the parent
+ * row (parent = the row being answered, root = the thread's first
+ * row). The parent may be in any status — a follow-up is a new
+ * message, not a state change on the parent. Unknown parent → 404.
+ */
+export async function createQuestionFollowup(
+  prisma: PrismaClient,
+  parentQuestionId: string,
+  input: CreateFollowupInput,
+): Promise<{ broadcastId: string; questionId: string; parentQuestionId: string; kind: BroadcastKind }> {
+  const question = normalizeQuestionText(input.question);
+  const parent = await prisma.agentQuestion.findUnique({ where: { id: parentQuestionId } });
+  if (!parent) throw httpError(404, 'QUESTION_NOT_FOUND');
+  const kind = normalizeKind(input.kind, parent.kind as BroadcastKind);
+
+  const broadcastId = randomUUID();
+  const row = await prisma.agentQuestion.create({
+    data: {
+      id: randomUUID(),
+      agentId: parent.agentId,
+      broadcastId,
+      kind,
+      question,
+      askedBy: input.askedBy,
+      askedAt: new Date(),
+      status: 'queued',
+      parentQuestionId: parent.id,
+      rootQuestionId: parent.rootQuestionId ?? parent.id,
+    },
+  });
+  await createAuditLog(prisma, {
+    actor: input.askedBy,
+    action: kind === 'instruction' ? 'instruction.followup' : 'question.followup',
+    target: row.id,
+    metadata: { parent_question_id: parent.id, broadcast_id: broadcastId, kind },
+  });
+  broadcast('broadcast.question_created', { broadcast_id: broadcastId, question_count: 1, kind });
+  return { broadcastId, questionId: row.id, parentQuestionId: parent.id, kind };
+}
+
+/**
+ * CONTRACT-11: broadcast a follow-up to the agents of an existing
+ * broadcast. Each new row's parent is THAT agent's latest row in the
+ * thread rooted at its row in the source broadcast, so per-agent
+ * threads stay linear even across several follow-up rounds. Targets
+ * default to every agent of the source broadcast; `agentIds` narrows
+ * to a subset (ids without a row in the source broadcast are skipped;
+ * zero valid targets → 400). Unknown broadcast → 404.
+ */
+export async function createBroadcastFollowup(
+  prisma: PrismaClient,
+  sourceBroadcastId: string,
+  input: CreateFollowupInput & { agentIds?: string[] },
+): Promise<{ broadcastId: string; questionCount: number; kind: BroadcastKind }> {
+  const question = normalizeQuestionText(input.question);
+  const sourceRows = await prisma.agentQuestion.findMany({
+    where: { broadcastId: sourceBroadcastId },
+  });
+  if (sourceRows.length === 0) throw httpError(404, 'BROADCAST_NOT_FOUND');
+  const kind = normalizeKind(input.kind, sourceRows[0].kind as BroadcastKind);
+
+  let targets = sourceRows;
+  if (input.agentIds && input.agentIds.length > 0) {
+    const wanted = new Set(input.agentIds);
+    targets = sourceRows.filter((r) => wanted.has(r.agentId));
+  }
+  if (targets.length === 0) throw httpError(400, 'NO_VALID_AGENTS');
+
+  const broadcastId = randomUUID();
+  const askedAt = new Date();
+  const data = [];
+  for (const src of targets) {
+    const rootId = src.rootQuestionId ?? src.id;
+    const latest = await prisma.agentQuestion.findFirst({
+      where: { agentId: src.agentId, OR: [{ id: rootId }, { rootQuestionId: rootId }] },
+      orderBy: { askedAt: 'desc' },
+    });
+    const parent = latest ?? src;
+    data.push({
+      id: randomUUID(),
+      agentId: src.agentId,
+      broadcastId,
+      kind,
+      question,
+      askedBy: input.askedBy,
+      askedAt,
+      status: 'queued',
+      parentQuestionId: parent.id,
+      rootQuestionId: rootId,
+    });
+  }
+  await prisma.agentQuestion.createMany({ data });
+  await createAuditLog(prisma, {
+    actor: input.askedBy,
+    action: kind === 'instruction' ? 'instruction.followup_broadcast' : 'question.followup_broadcast',
+    target: broadcastId,
+    metadata: { source_broadcast_id: sourceBroadcastId, question_count: data.length, kind },
+  });
+  broadcast('broadcast.question_created', { broadcast_id: broadcastId, question_count: data.length, kind });
+  return { broadcastId, questionCount: data.length, kind };
+}
+
+/** Batch-load parent rows for the runtime poll's context payload. */
+export async function loadQuestionParents(
+  prisma: PrismaClient,
+  rows: AgentQuestion[],
+): Promise<Map<string, AgentQuestion>> {
+  const ids = [...new Set(rows.map((r) => r.parentQuestionId).filter((x): x is string => !!x))];
+  if (ids.length === 0) return new Map();
+  const parents = await prisma.agentQuestion.findMany({ where: { id: { in: ids } } });
+  return new Map(parents.map((p) => [p.id, p]));
 }
 
 /**
@@ -195,16 +330,55 @@ export function summarize(rows: Array<{ status: string }>): BroadcastSummary {
   return summary;
 }
 
+export type BroadcastRow = AgentQuestion & {
+  agent: { name: string };
+  /** CONTRACT-11: later rows of this agent's thread (other broadcasts), oldest first. */
+  followups: AgentQuestion[];
+  /** CONTRACT-11: the parent row's text when this row is itself a follow-up. */
+  parentQuestion: string | null;
+};
+
 /** One broadcast's rows with agent names, after lazy expiry. Null when unknown. */
-export async function getBroadcast(prisma: PrismaClient, broadcastId: string) {
-  await expireStaleQuestions(prisma, { broadcastId });
+export async function getBroadcast(prisma: PrismaClient, broadcastId: string): Promise<BroadcastRow[] | null> {
+  // Global sweep (not just this broadcast) so nested follow-up statuses
+  // shown in the detail are expired consistently too.
+  await expireStaleQuestions(prisma);
   const rows = await prisma.agentQuestion.findMany({
     where: { broadcastId },
     include: { agent: { select: { name: true } } },
     orderBy: { agent: { name: 'asc' } },
   });
   if (rows.length === 0) return null;
-  return rows;
+
+  const rootIds = [...new Set(rows.map((r) => r.rootQuestionId ?? r.id))];
+  const descendants = await prisma.agentQuestion.findMany({
+    where: { rootQuestionId: { in: rootIds } },
+    orderBy: { askedAt: 'asc' },
+  });
+  const itemIds = new Set(rows.map((r) => r.id));
+  const byRoot = new Map<string, AgentQuestion[]>();
+  for (const d of descendants) {
+    if (itemIds.has(d.id) || d.broadcastId === broadcastId || !d.rootQuestionId) continue;
+    const list = byRoot.get(d.rootQuestionId) ?? [];
+    list.push(d);
+    byRoot.set(d.rootQuestionId, list);
+  }
+
+  const parentIds = [...new Set(rows.map((r) => r.parentQuestionId).filter((x): x is string => !!x))];
+  const parents =
+    parentIds.length > 0
+      ? await prisma.agentQuestion.findMany({
+          where: { id: { in: parentIds } },
+          select: { id: true, question: true },
+        })
+      : [];
+  const parentText = new Map(parents.map((p) => [p.id, p.question]));
+
+  return rows.map((r) => ({
+    ...r,
+    followups: byRoot.get(r.rootQuestionId ?? r.id) ?? [],
+    parentQuestion: r.parentQuestionId ? (parentText.get(r.parentQuestionId) ?? null) : null,
+  }));
 }
 
 /** Recent broadcasts (grouped in memory from the latest rows) for the dashboard list. */

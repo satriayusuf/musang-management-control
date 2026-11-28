@@ -259,7 +259,8 @@ export function toRuleDto(r: AutomationRule) {
   };
 }
 
-/** CONTRACT-8: one broadcast-question row. CONTRACT-9 adds `kind`. */
+/** CONTRACT-8: one broadcast-question row. CONTRACT-9 adds `kind`.
+ *  CONTRACT-11 adds the follow-up thread links. */
 export function toQuestionDto(q: AgentQuestion) {
   return {
     id: q.id,
@@ -272,6 +273,8 @@ export function toQuestionDto(q: AgentQuestion) {
     status: q.status,
     answer: q.answer,
     answered_at: iso(q.answeredAt),
+    parent_question_id: q.parentQuestionId ?? null,
+    root_question_id: q.rootQuestionId ?? null,
   };
 }
 

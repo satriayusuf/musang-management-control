@@ -346,4 +346,175 @@ describe('broadcast questions (integration, CONTRACT-8)', () => {
     expect(res.statusCode).toBe(400);
     expect(await prisma.agentQuestion.count()).toBe(0);
   });
+
+  // --- CONTRACT-11: follow-up replies (threaded updates) ---
+
+  function followupQuestion(questionId: string, payload: { question: string; kind?: string }) {
+    return app.inject({
+      method: 'POST',
+      url: `/api/questions/${questionId}/followup`,
+      headers: { authorization: `Bearer ${jwt}` },
+      payload,
+    });
+  }
+
+  function followupBroadcast(
+    broadcastId: string,
+    payload: { question: string; kind?: string; agent_ids?: string[] },
+  ) {
+    return app.inject({
+      method: 'POST',
+      url: `/api/broadcasts/${broadcastId}/followup`,
+      headers: { authorization: `Bearer ${jwt}` },
+      payload,
+    });
+  }
+
+  it('per-agent follow-up links parent/root, polls with parent context, and nests in detail', async () => {
+    const a = await pairAgent(app, jwt, { name: 'rig-q17' });
+    const created = await createBroadcast([a.agentId]);
+    const { broadcast_id } = created.json() as { broadcast_id: string };
+    const polled = await pollQuestions(a);
+    const root = (
+      polled.json() as { questions: Array<{ question_id: string; parent: unknown }> }
+    ).questions[0];
+    expect(root.parent).toBeNull();
+    await postAnswer(a, root.question_id, 'Hashrate 1,91 H/s.');
+
+    const fu = await followupQuestion(root.question_id, { question: 'Sekarang berapa?' });
+    expect(fu.statusCode).toBe(201);
+    const fuBody = fu.json() as {
+      broadcast_id: string;
+      question_id: string;
+      parent_question_id: string;
+      kind: string;
+    };
+    expect(fuBody.parent_question_id).toBe(root.question_id);
+    expect(fuBody.kind).toBe('question'); // defaults to the parent's kind
+    expect(fuBody.broadcast_id).not.toBe(broadcast_id);
+
+    const row = await prisma.agentQuestion.findUnique({ where: { id: fuBody.question_id } });
+    expect(row?.parentQuestionId).toBe(root.question_id);
+    expect(row?.rootQuestionId).toBe(root.question_id);
+    expect(row?.agentId).toBe(a.agentId);
+
+    // Runtime poll carries the parent exchange as context.
+    const polled2 = await pollQuestions(a);
+    const items = (
+      polled2.json() as {
+        questions: Array<{
+          question_id: string;
+          parent: { question_id: string; question: string; answer: string | null } | null;
+        }>;
+      }
+    ).questions;
+    expect(items).toHaveLength(1);
+    expect(items[0].question_id).toBe(fuBody.question_id);
+    expect(items[0].parent?.question_id).toBe(root.question_id);
+    expect(items[0].parent?.answer).toContain('1,91');
+
+    const answered = await postAnswer(a, fuBody.question_id, 'Sekarang 1,87 H/s.');
+    expect(answered.statusCode).toBe(200);
+    const dto = answered.json() as { parent_question_id: string | null; root_question_id: string | null };
+    expect(dto.parent_question_id).toBe(root.question_id);
+    expect(dto.root_question_id).toBe(root.question_id);
+
+    // The original broadcast's detail nests the follow-up under the agent's row.
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/api/broadcasts/${broadcast_id}`,
+      headers: { authorization: `Bearer ${jwt}` },
+    });
+    const view = detail.json() as {
+      items: Array<{ followups: Array<{ id: string; answer: string | null }> }>;
+    };
+    expect(view.items[0].followups).toHaveLength(1);
+    expect(view.items[0].followups[0].id).toBe(fuBody.question_id);
+    expect(view.items[0].followups[0].answer).toContain('1,87');
+  });
+
+  it('broadcast follow-up fans out per agent; a second round chains to the latest thread row', async () => {
+    const a = await pairAgent(app, jwt, { name: 'rig-q18' });
+    const b = await pairAgent(app, jwt, { name: 'rig-q19', workerName: 'czx-utama-rw2x' });
+    const created = await createBroadcast([a.agentId, b.agentId]);
+    const { broadcast_id } = created.json() as { broadcast_id: string };
+    const roots = await prisma.agentQuestion.findMany({ where: { broadcastId: broadcast_id } });
+    const rootOf = (agentId: string) => roots.find((r) => r.agentId === agentId)!;
+
+    const fu1 = await followupBroadcast(broadcast_id, { question: 'Update: berapa sekarang?' });
+    expect(fu1.statusCode).toBe(201);
+    const fu1Body = fu1.json() as { broadcast_id: string; question_count: number; kind: string };
+    expect(fu1Body.question_count).toBe(2);
+    const fu1Rows = await prisma.agentQuestion.findMany({ where: { broadcastId: fu1Body.broadcast_id } });
+    for (const r of fu1Rows) {
+      expect(r.parentQuestionId).toBe(rootOf(r.agentId).id);
+      expect(r.rootQuestionId).toBe(rootOf(r.agentId).id);
+    }
+
+    // Second round against the ORIGINAL broadcast: parent = first follow-up row.
+    const fu2 = await followupBroadcast(broadcast_id, { question: 'Update lagi?' });
+    const fu2Body = fu2.json() as { broadcast_id: string };
+    const fu2Rows = await prisma.agentQuestion.findMany({ where: { broadcastId: fu2Body.broadcast_id } });
+    expect(fu2Rows).toHaveLength(2);
+    for (const r of fu2Rows) {
+      const expectedParent = fu1Rows.find((x) => x.agentId === r.agentId)!;
+      expect(r.parentQuestionId).toBe(expectedParent.id);
+      expect(r.rootQuestionId).toBe(rootOf(r.agentId).id);
+    }
+
+    // Subset targets: only agent a; unknown ids are skipped; none valid → 400.
+    const fu3 = await followupBroadcast(broadcast_id, {
+      question: 'Khusus A',
+      agent_ids: [a.agentId, 'agt_tidakada'],
+    });
+    expect(fu3.statusCode).toBe(201);
+    expect((fu3.json() as { question_count: number }).question_count).toBe(1);
+    const none = await followupBroadcast(broadcast_id, {
+      question: 'Tidak ada target',
+      agent_ids: ['agt_tidakada'],
+    });
+    expect(none.statusCode).toBe(400);
+
+    // The list marks follow-up broadcasts; the original is not one.
+    const list = await app.inject({
+      method: 'GET',
+      url: '/api/broadcasts',
+      headers: { authorization: `Bearer ${jwt}` },
+    });
+    const items = (list.json() as { items: Array<{ broadcast_id: string; is_followup: boolean }> }).items;
+    expect(items.find((i) => i.broadcast_id === fu1Body.broadcast_id)?.is_followup).toBe(true);
+    expect(items.find((i) => i.broadcast_id === broadcast_id)?.is_followup).toBe(false);
+  });
+
+  it('follow-up kind defaults to the original kind and can be overridden; invalid kind → 400', async () => {
+    const a = await pairAgent(app, jwt, { name: 'rig-q20' });
+    const created = await createBroadcastWithKind([a.agentId], 'instruction');
+    const { broadcast_id } = created.json() as { broadcast_id: string };
+    const root = await prisma.agentQuestion.findFirst({ where: { broadcastId: broadcast_id } });
+
+    const def = await followupQuestion(root!.id, { question: 'Lanjut ubah ke 30 detik' });
+    expect(def.statusCode).toBe(201);
+    expect((def.json() as { kind: string }).kind).toBe('instruction');
+
+    const over = await followupQuestion(root!.id, { question: 'Sudah berubah belum?', kind: 'question' });
+    expect(over.statusCode).toBe(201);
+    expect((over.json() as { kind: string }).kind).toBe('question');
+
+    const bad = await followupQuestion(root!.id, { question: 'x', kind: 'perintah' });
+    expect(bad.statusCode).toBe(400);
+  });
+
+  it('follow-up to an unknown question/broadcast is 404; unauthenticated follow-up is 401', async () => {
+    const missing = '00000000-0000-0000-0000-000000000000';
+    const r1 = await followupQuestion(missing, { question: 'halo' });
+    expect(r1.statusCode).toBe(404);
+    const r2 = await followupBroadcast(missing, { question: 'halo' });
+    expect(r2.statusCode).toBe(404);
+    const anon = await app.inject({
+      method: 'POST',
+      url: `/api/questions/${missing}/followup`,
+      payload: { question: 'halo' },
+    });
+    expect(anon.statusCode).toBe(401);
+  });
 });

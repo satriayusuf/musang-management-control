@@ -284,21 +284,26 @@ model AgentRuntimeState {
 // ---------------------------------------------------------------------------
 
 model AgentQuestion {
-  id          String    @id // UUID (spec: plain UUID, no prefix)
-  agentId     String    @map("agent_id")
-  broadcastId String    @map("broadcast_id") // UUID grouping one fan-out
-  kind        String    @default("question") // question | instruction (CONTRACT-9)
-  question    String
-  askedBy     String    @map("asked_by")
-  askedAt     DateTime  @default(now()) @map("asked_at")
-  status      String    @default("queued") // queued | answered | expired
-  answer      String?
-  answeredAt  DateTime? @map("answered_at")
+  id               String    @id // UUID (spec: plain UUID, no prefix)
+  agentId          String    @map("agent_id")
+  broadcastId      String    @map("broadcast_id") // UUID grouping one fan-out
+  kind             String    @default("question") // question | instruction (CONTRACT-9)
+  question         String
+  askedBy          String    @map("asked_by")
+  askedAt          DateTime  @default(now()) @map("asked_at")
+  status           String    @default("queued") // queued | answered | expired
+  answer           String?
+  answeredAt       DateTime? @map("answered_at")
+  // CONTRACT-11: follow-up threading. Both NULL on a thread root row.
+  parentQuestionId String?   @map("parent_question_id") // previous row in this agent's thread
+  rootQuestionId   String?   @map("root_question_id") // first row of this agent's thread
 
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
   @@index([agentId, status])
   @@index([broadcastId])
+  @@index([parentQuestionId])
+  @@index([rootQuestionId])
   @@map("agent_questions")
 }
 

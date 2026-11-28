@@ -12,14 +12,22 @@ import type { FastifyInstance } from 'fastify';
 import type { PrismaClient } from '@prisma/client';
 import { toQuestionDto } from '../lib/serialize';
 import { authenticateRuntime, httpError, requireRole, requireUser } from '../plugins/auth';
-import { questionAnswerBodySchema, questionBroadcastBodySchema } from '../schemas';
+import {
+  broadcastFollowupBodySchema,
+  questionAnswerBodySchema,
+  questionBroadcastBodySchema,
+  questionFollowupBodySchema,
+} from '../schemas';
 import {
   answerQuestion,
+  createBroadcastFollowup,
   createQuestionBroadcast,
+  createQuestionFollowup,
   deleteBroadcast,
   getBroadcast,
   listBroadcasts,
   listQueuedQuestionsForRuntime,
+  loadQuestionParents,
   summarize,
 } from '../services/questions';
 
@@ -63,6 +71,8 @@ export async function questionRoutes(app: FastifyInstance, prisma: PrismaClient)
           asked_by: rows[0].askedBy,
           asked_at: rows[0].askedAt.toISOString(),
           summary: summarize(rows),
+          // CONTRACT-11: this broadcast continues an earlier thread.
+          is_followup: rows.some((r) => r.parentQuestionId !== null),
         })),
         total,
         page,
@@ -89,8 +99,64 @@ export async function questionRoutes(app: FastifyInstance, prisma: PrismaClient)
         items: rows.map((r) => ({
           ...toQuestionDto(r),
           agent_name: r.agent.name,
+          // CONTRACT-11: parent text (when this row is a follow-up) and
+          // the later rows of this agent's thread, oldest first.
+          parent_question: r.parentQuestion,
+          followups: r.followups.map((f) => toQuestionDto(f)),
         })),
       };
+    },
+  );
+
+  // --- Dashboard: broadcast a follow-up to this broadcast's agents (CONTRACT-11) ---
+  app.post<{
+    Params: { broadcastId: string };
+    Body: { question: string; kind?: string; agent_ids?: string[] };
+  }>(
+    '/api/broadcasts/:broadcastId/followup',
+    {
+      preHandler: [requireUser, requireRole('OPERATOR', 'ADMIN')],
+      schema: { body: broadcastFollowupBodySchema },
+    },
+    async (request, reply) => {
+      const user = request.user as { sub: string; email: string };
+      const result = await createBroadcastFollowup(prisma, request.params.broadcastId, {
+        question: request.body.question,
+        kind: request.body.kind,
+        agentIds: request.body.agent_ids,
+        askedBy: user.email,
+      });
+      return reply.status(201).send({
+        broadcast_id: result.broadcastId,
+        question_count: result.questionCount,
+        kind: result.kind,
+      });
+    },
+  );
+
+  // --- Dashboard: reply to ONE agent's message (CONTRACT-11) ---
+  app.post<{
+    Params: { questionId: string };
+    Body: { question: string; kind?: string };
+  }>(
+    '/api/questions/:questionId/followup',
+    {
+      preHandler: [requireUser, requireRole('OPERATOR', 'ADMIN')],
+      schema: { body: questionFollowupBodySchema },
+    },
+    async (request, reply) => {
+      const user = request.user as { sub: string; email: string };
+      const result = await createQuestionFollowup(prisma, request.params.questionId, {
+        question: request.body.question,
+        kind: request.body.kind,
+        askedBy: user.email,
+      });
+      return reply.status(201).send({
+        broadcast_id: result.broadcastId,
+        question_id: result.questionId,
+        parent_question_id: result.parentQuestionId,
+        kind: result.kind,
+      });
     },
   );
 
@@ -114,15 +180,30 @@ export async function questionRoutes(app: FastifyInstance, prisma: PrismaClient)
         return { questions: [] };
       }
       const rows = await listQueuedQuestionsForRuntime(prisma, agent.id);
+      // CONTRACT-11: follow-ups carry their parent exchange as context
+      // so the runtime answers with an update, not a cold reply.
+      const parents = await loadQuestionParents(prisma, rows);
       return {
-        questions: rows.map((q) => ({
-          question_id: q.id,
-          broadcast_id: q.broadcastId,
-          kind: q.kind,
-          question: q.question,
-          asked_at: q.askedAt.toISOString(),
-          asked_by: q.askedBy,
-        })),
+        questions: rows.map((q) => {
+          const parent = q.parentQuestionId ? parents.get(q.parentQuestionId) : undefined;
+          return {
+            question_id: q.id,
+            broadcast_id: q.broadcastId,
+            kind: q.kind,
+            question: q.question,
+            asked_at: q.askedAt.toISOString(),
+            asked_by: q.askedBy,
+            parent: parent
+              ? {
+                  question_id: parent.id,
+                  kind: parent.kind,
+                  question: parent.question,
+                  answer: parent.answer,
+                  answered_at: parent.answeredAt ? parent.answeredAt.toISOString() : null,
+                }
+              : null,
+          };
+        }),
       };
     },
   );

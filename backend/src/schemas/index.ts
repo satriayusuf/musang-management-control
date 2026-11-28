@@ -321,6 +321,30 @@ export const questionAnswerBodySchema = {
   required: ['answer'],
 } as const;
 
+// --- Phase 11 schemas (CONTRACT-11: follow-up replies) ---
+
+export const questionFollowupBodySchema = {
+  type: 'object',
+  properties: {
+    question: { type: 'string', minLength: 1, maxLength: 2000 },
+    // Optional: defaults to the parent row's kind.
+    kind: { type: 'string', enum: ['question', 'instruction'] },
+  },
+  required: ['question'],
+} as const;
+
+export const broadcastFollowupBodySchema = {
+  type: 'object',
+  properties: {
+    question: { type: 'string', minLength: 1, maxLength: 2000 },
+    // Optional: defaults to the original broadcast's kind.
+    kind: { type: 'string', enum: ['question', 'instruction'] },
+    // Optional subset of the original broadcast's agents.
+    agent_ids: { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 },
+  },
+  required: ['question'],
+} as const;
+
 export const selfRegisterBodySchema = {
   type: 'object',
   properties: {
